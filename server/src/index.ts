@@ -4,6 +4,8 @@ import { corsHeaders, getInstallId } from './lib/auth.js'
 import { createRateLimiter } from './lib/ratelimit.js'
 import { safeLog } from './lib/redact.js'
 import { embedTexts } from './routes/embed.js'
+import { goalEmbed } from './routes/goal.embed.js'
+import { goalScore } from './routes/goal.score.js'
 import { summarise } from './routes/llm.summarise.js'
 import { searchSegments } from './routes/search.js'
 import { sttConnect, type SttConnectRequest } from './routes/stt.connect.js'
@@ -53,9 +55,15 @@ export function createMindMirrorServer() {
         const body = await readJson<Parameters<typeof summarise>[0]>(req)
         const result = await summarise(body)
         send(res, 200, result, origin)
-      } else if (req.method === 'POST' && (url.pathname === '/embed' || url.pathname === '/goal/embed')) {
+      } else if (req.method === 'POST' && url.pathname === '/embed') {
         const body = await readJson<Parameters<typeof embedTexts>[0]>(req)
         send(res, 200, await embedTexts(body), origin)
+      } else if (req.method === 'POST' && url.pathname === '/goal/embed') {
+        const body = await readJson<Parameters<typeof goalEmbed>[0]>(req)
+        send(res, 200, await goalEmbed(body), origin)
+      } else if (req.method === 'POST' && url.pathname === '/goal/score') {
+        const body = await readJson<Parameters<typeof goalScore>[0]>(req)
+        send(res, 200, await goalScore(body), origin)
       } else if (req.method === 'POST' && url.pathname === '/search') {
         const body = await readJson<{ q?: string; k?: number }>(req)
         send(res, 200, await searchSegments(body), origin)

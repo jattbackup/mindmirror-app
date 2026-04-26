@@ -39,7 +39,7 @@ export function createEmbeddingNoveltyDetector(): Detector {
       }
       const distance = 1 - cosine(vec, centroid)
       centroid = centroid.map((v, i) => v * 0.85 + vec[i] * 0.15)
-      if (distance > 0.55) return { weight: 0.25, reason: 'topic_shift', phaseHint: 'topic_end' }
+      if (distance > 0.55) return { weight: 0.25, reason: 'topic_shift', phaseHint: 'align' }
       return { weight: 0, reason: null }
     },
   }

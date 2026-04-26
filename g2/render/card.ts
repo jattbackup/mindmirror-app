@@ -6,7 +6,7 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { CARD_MAX_BULLETS } from '../../_shared/constants'
 import { textContainer } from './containers'
-import { formatBullets, progressBar, truncate } from './format'
+import { formatBullets, formatDuration, progressBar, truncate } from './format'
 
 export type CardKind = 'recap' | 'drift' | 'actions' | 'memory-hit'
 
@@ -14,31 +14,51 @@ export type CardModel = {
   kind: CardKind
   title: string
   bullets: string[]
+  steer?: string
+  alignScore?: number
+  driftFromBaseline?: number
   footerHint?: string
-  alignment?: number
-  driftDirection?: 'up' | 'down' | 'flat'
   tickIndex?: number
+  elapsedMs?: number
+  timeboxMs?: number
   ts?: number
+  segmentId?: string
 }
 
 function headerFor(card: CardModel): string {
   const glyph = card.kind === 'drift' ? '◆' : card.kind === 'actions' ? '■' : '●'
-  const align = typeof card.alignment === 'number'
-    ? ` align ${card.alignment.toFixed(2)} ${card.driftDirection === 'down' ? '▼' : card.driftDirection === 'up' ? '▲' : '-'}`
+  const timer = typeof card.elapsedMs === 'number'
+    ? ` ${formatDuration(card.elapsedMs)}${typeof card.timeboxMs === 'number' ? ` / ${formatDuration(card.timeboxMs)}` : ''}`
     : ''
-  const tick = card.tickIndex ? ` #${card.tickIndex}` : ''
-  return truncate(`${glyph} ${card.title}${tick}${align}`, 120)
+  const align = typeof card.alignScore === 'number'
+    ? ` align ${card.alignScore.toFixed(2)} ${typeof card.driftFromBaseline === 'number' && card.driftFromBaseline > 0.05 ? '▼' : '▲'}`
+    : ''
+  const drift = typeof card.driftFromBaseline === 'number' && card.driftFromBaseline > 0
+    ? ` drift ${card.driftFromBaseline.toFixed(2)}`
+    : ''
+  const tick = card.tickIndex ? ` tick ${card.tickIndex}` : ''
+  return truncate(`${glyph}${timer}${tick}${align}${drift} ${card.title}`, 120)
 }
 
 function bodyFor(card: CardModel): string {
   if (card.kind === 'drift') {
-    const steer = card.bullets[0] ?? 'Steer back toward the stated goal.'
-    return `Drift detected\n\n> ${truncate(steer, 180)}\n\n${progressBar(card.alignment ?? 0)}`
+    const observation = truncate(card.bullets[0] ?? 'The conversation has moved away from the close goal.', 140)
+    const steer = truncate(card.steer ?? 'Let us lock the next step before time runs out.', 90)
+    return [
+      `❝ ${observation} ❞`,
+      '',
+      `> steer: "${steer}"`,
+      '',
+      progressBar(card.alignScore ?? 0),
+    ].join('\n')
+  }
+  if (card.kind === 'actions') {
+    return formatBullets(card.bullets, CARD_MAX_BULLETS)
   }
   return formatBullets(card.bullets, CARD_MAX_BULLETS)
 }
 
-function buildCardPage(card: CardModel): CreateStartUpPageContainer {
+export function buildCardPage(card: CardModel): CreateStartUpPageContainer {
   const footer = truncate(card.footerHint ?? '▲ prev  ● save  ▼ dismiss', 120)
   return new CreateStartUpPageContainer({
     containerTotalNum: 3,

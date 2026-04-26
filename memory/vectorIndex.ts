@@ -23,13 +23,15 @@ export class VectorIndex {
   private items: IndexedSegment[] = []
 
   rebuild(segments: Segment[]): void {
-    this.items = segments.map((segment) => ({
-      segmentId: segment.id,
-      sessionId: segment.sessionId,
-      ts: segment.startedAt,
-      text: `${segment.summary} ${segment.bullets.join(' ')} ${segment.decisions.join(' ')}`,
-      vector: vectorFromSegment(segment),
-    }))
+    this.items = segments
+      .filter((segment) => segment.kind !== 'heartbeat')
+      .map((segment) => ({
+        segmentId: segment.id,
+        sessionId: segment.sessionId,
+        ts: segment.startedAt,
+        text: `${segment.summary} ${segment.bullets.join(' ')} ${segment.decisions.join(' ')} ${segment.llmSteer ?? ''}`,
+        vector: vectorFromSegment(segment),
+      }))
   }
 
   search(query: string, k: number): Array<IndexedSegment & { score: number }> {

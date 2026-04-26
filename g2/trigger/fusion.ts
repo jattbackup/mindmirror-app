@@ -1,11 +1,11 @@
 import { ALIGN_THRESHOLD, DRIFT_DELTA } from '../../_shared/constants'
 import type { DetectorOutput } from './detectors/_iface'
-import type { Phase, TriggerEvent } from './index'
+import type { Phase, TriggerEvent, TriggerReason } from './index'
 
-export function fuse(outputs: DetectorOutput[]): Pick<TriggerEvent, 'reason' | 'phase' | 'score'> | null {
+export function fuse(outputs: DetectorOutput[]): Pick<TriggerEvent, 'reason' | 'phase'> & { score: number } | null {
   let score = 0
-  let reason: TriggerEvent['reason'] | null = null
-  let phase: Phase = 'mid'
+  let reason: TriggerReason | null = null
+  let phase: Phase = 'align'
 
   for (const output of outputs) {
     if (!output.reason) continue

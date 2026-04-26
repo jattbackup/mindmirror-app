@@ -18,14 +18,16 @@ describe('input event normalization', () => {
 
 function fakeHandlers() {
   return {
+    showOnboarding: vi.fn(),
     startListening: vi.fn(),
     stopListening: vi.fn(),
     showPreviousCard: vi.fn(),
     dismissCard: vi.fn(),
     saveCard: vi.fn(),
+    muteDrift: vi.fn(),
     renderHome: vi.fn(),
     renderArmed: vi.fn(),
-    forceProbe: vi.fn(),
+    forceMark: vi.fn(),
     cleanup: vi.fn(),
   }
 }

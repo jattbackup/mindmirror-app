@@ -13,13 +13,31 @@ export type SearchHit = {
 }
 
 export type Memory = {
+  startSession(init: {
+    sessionId: string
+    goal: string
+    goalEmbedding: Float32Array
+    participants: string[]
+    timeboxMs: number
+    startedAt: number
+    prospect?: string
+    offer?: string
+    successCriteria?: string[]
+    knownObjections?: string[]
+    nextAsk?: string
+  }): Promise<void>
   appendSegment(seg: Segment): Promise<void>
-  finaliseSession(sessionId: string, title: string | null): Promise<void>
+  finaliseSession(sessionId: string, args: {
+    title: string | null
+    finalAlign: number | null
+    outcome: 'completed' | 'abandoned' | 'timeboxed'
+  }): Promise<void>
   search(query: string, k?: number): Promise<SearchHit[]>
   forgetSession(sessionId: string): Promise<void>
   forgetAll(): Promise<void>
   exportEncryptedBlob(): Promise<Blob>
-  appendSession?(session: Session): Promise<void>
+  getSnapshot(): MemorySnapshot
+  markSegmentAccepted?(segmentId: string, accepted: boolean): Promise<void>
 }
 
 export async function createMemory(opts: {
@@ -43,6 +61,30 @@ export async function createMemory(opts: {
   }
 
   return {
+    async startSession(init) {
+      snapshot.sessions = snapshot.sessions.filter((existing) => existing.id !== init.sessionId)
+      snapshot.sessions.push({
+        id: init.sessionId,
+        startedAt: init.startedAt,
+        endedAt: null,
+        title: null,
+        locationHint: null,
+        participants: init.participants,
+        goal: init.goal,
+        goalEmbedding: Array.from(init.goalEmbedding),
+        timeboxMs: init.timeboxMs,
+        prospect: init.prospect,
+        offer: init.offer,
+        successCriteria: init.successCriteria ?? [],
+        knownObjections: init.knownObjections ?? [],
+        nextAsk: init.nextAsk,
+        alignBaseline: null,
+        finalAlign: null,
+        outcome: null,
+        tagIds: [],
+      })
+      await persist()
+    },
     async appendSegment(seg) {
       assertSegment(seg)
       const sessionExists = snapshot.sessions.some((session) => session.id === seg.sessionId)
@@ -54,6 +96,12 @@ export async function createMemory(opts: {
           title: null,
           locationHint: null,
           participants: [],
+          goal: '',
+          goalEmbedding: [],
+          timeboxMs: 0,
+          alignBaseline: null,
+          finalAlign: null,
+          outcome: null,
           tagIds: [],
         })
       }
@@ -61,11 +109,13 @@ export async function createMemory(opts: {
       snapshot.segments.push(serialiseSegment(seg))
       await persist()
     },
-    async finaliseSession(sessionId, title) {
+    async finaliseSession(sessionId, args) {
       const session = snapshot.sessions.find((item) => item.id === sessionId)
       if (session) {
         session.endedAt = Date.now()
-        session.title = title
+        session.title = args.title
+        session.finalAlign = args.finalAlign
+        session.outcome = args.outcome
       }
       await persist()
     },
@@ -108,9 +158,12 @@ export async function createMemory(opts: {
       }
       return new Blob([encryptedCache], { type: 'application/json' })
     },
-    async appendSession(session) {
-      snapshot.sessions = snapshot.sessions.filter((existing) => existing.id !== session.id)
-      snapshot.sessions.push(session)
+    getSnapshot() {
+      return structuredClone(snapshot)
+    },
+    async markSegmentAccepted(segmentId, accepted) {
+      const segment = snapshot.segments.find((item) => item.id === segmentId)
+      if (segment) segment.wasAccepted = accepted
       await persist()
     },
   }
@@ -119,7 +172,8 @@ export async function createMemory(opts: {
 async function loadSnapshot(raw: string, passphrase: string): Promise<MemorySnapshot> {
   if (!raw) return emptySnapshot()
   const payload = JSON.parse(raw) as EncryptedPayload
-  return decryptJson<MemorySnapshot>(payload, passphrase)
+  const decrypted = await decryptJson<MemorySnapshot | LegacySnapshot>(payload, passphrase)
+  return migrateSnapshot(decrypted)
 }
 
 function serialiseSegment(seg: Segment): Segment {
@@ -127,5 +181,84 @@ function serialiseSegment(seg: Segment): Segment {
     ...seg,
     embedding: Array.from(seg.embedding as ArrayLike<number>),
     transcript: seg.transcript,
+  }
+}
+
+type LegacySnapshot = {
+  version: 1
+  sessions: Array<Partial<Session> & { id: string; startedAt: number }>
+  segments: Array<Partial<Segment> & {
+    id: string
+    sessionId: string
+    startedAt: number
+    triggerThatClosedIt?: Segment['triggerThatClosedIt']
+  }>
+  updatedAt: number
+}
+
+function migrateSnapshot(snapshot: MemorySnapshot | LegacySnapshot): MemorySnapshot {
+  if (snapshot.version === 2) return snapshot
+  return {
+    version: 2,
+    sessions: snapshot.sessions.map((session) => ({
+      id: session.id,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt ?? null,
+      title: session.title ?? null,
+      locationHint: session.locationHint ?? null,
+      participants: session.participants ?? [],
+      goal: session.goal ?? '',
+      goalEmbedding: Array.from(session.goalEmbedding ?? []),
+      timeboxMs: session.timeboxMs ?? 0,
+      prospect: session.prospect,
+      offer: session.offer,
+      successCriteria: session.successCriteria ?? [],
+      knownObjections: session.knownObjections ?? [],
+      nextAsk: session.nextAsk,
+      alignBaseline: session.alignBaseline ?? null,
+      finalAlign: session.finalAlign ?? null,
+      outcome: session.outcome ?? null,
+      tagIds: session.tagIds ?? [],
+    })),
+    segments: snapshot.segments.map((segment) => ({
+      id: segment.id,
+      sessionId: segment.sessionId,
+      startedAt: segment.startedAt,
+      endedAt: segment.endedAt ?? segment.startedAt,
+      kind: segment.kind ?? (segment.triggerThatClosedIt === 'closing_cue' ? 'actions' : segment.triggerThatClosedIt === 'drift' ? 'drift' : 'recap'),
+      triggerThatFiredIt: segment.triggerThatFiredIt ?? legacyReason(segment.triggerThatClosedIt),
+      triggerThatClosedIt: segment.triggerThatClosedIt,
+      summary: segment.summary ?? '',
+      bullets: segment.bullets ?? [],
+      actionItems: segment.actionItems ?? [],
+      decisions: segment.decisions ?? [],
+      embedding: Array.from(segment.embedding ?? []),
+      alignScore: segment.alignScore ?? null,
+      driftFromBaseline: segment.driftFromBaseline ?? null,
+      llmSteer: segment.llmSteer ?? null,
+      wasAccepted: segment.wasAccepted ?? null,
+      transcript: segment.transcript,
+    })),
+    updatedAt: snapshot.updatedAt,
+  }
+}
+
+function legacyReason(reason: Segment['triggerThatClosedIt'] | undefined): Segment['triggerThatFiredIt'] {
+  switch (reason) {
+    case 'closing_cue':
+      return 'closing_cue'
+    case 'topic_shift':
+      return 'topic_shift'
+    case 'silence':
+      return 'silence'
+    case 'motion':
+      return 'motion'
+    case 'manual':
+      return 'manual_mark'
+    case 'drift':
+      return 'drift_breach'
+    case 'periodic':
+    default:
+      return 'tick'
   }
 }

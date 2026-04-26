@@ -29,7 +29,7 @@ export const discourseShiftDetector: Detector = {
     const prev = tail.slice(midpoint, Math.max(midpoint, tail.length - 120))
     const next = tail.slice(-120)
     const score = jaccard(words(prev), words(next))
-    if (score < 0.15) return { weight: 0.35, reason: 'topic_shift', phaseHint: 'topic_end' }
+    if (score < 0.15) return { weight: 0.35, reason: 'topic_shift', phaseHint: 'align' }
     return { weight: 0, reason: null }
   },
 }

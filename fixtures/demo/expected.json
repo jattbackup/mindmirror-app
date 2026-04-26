@@ -1,0 +1,12 @@
+[
+  { "tickIndex": 1, "expectedKind": "recap", "expectedPhase": "warmup" },
+  { "tickIndex": 2, "expectedKind": "recap", "expectedPhase": "warmup" },
+  { "tickIndex": 3, "expectedKind": "recap", "expectedPhase": "warmup" },
+  { "tickIndex": 4, "expectedKind": "recap", "expectedPhase": "align" },
+  { "tickIndex": 5, "expectedKind": "recap", "expectedPhase": "align" },
+  { "tickIndex": 6, "expectedKind": "recap", "expectedPhase": "align" },
+  { "tickIndex": 7, "expectedKind": "recap", "expectedPhase": "align" },
+  { "tickIndex": 8, "expectedKind": "recap", "expectedPhase": "align" },
+  { "tickIndex": 9, "expectedKind": "drift", "expectedPhase": "drift" },
+  { "tickIndex": 10, "expectedKind": "actions", "expectedPhase": "wrap" }
+]

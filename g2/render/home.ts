@@ -6,14 +6,14 @@ import {
 import { textContainer } from './containers'
 import { progressBar, truncate } from './format'
 
-export function buildHomePage(goal: string): CreateStartUpPageContainer {
+export function buildHomePage(goal: string, ready = false): CreateStartUpPageContainer {
   const body = [
     '● MindMirror',
-    'Tap to start listening',
+    ready ? 'Tap to confirm sales goal' : 'Set sales goal in companion',
     '',
     `Goal: ${truncate(goal, 90)}`,
     '',
-    `${progressBar(0)} ready`,
+    `${progressBar(ready ? 1 : 0)} ${ready ? 'ready' : 'waiting'}`,
     '',
     'Double tap exits',
   ].join('\n')
@@ -42,8 +42,9 @@ export async function renderHome(
   bridge: EvenAppBridge,
   goal: string,
   mode: 'create' | 'rebuild',
+  ready = false,
 ): Promise<void> {
-  const page = buildHomePage(goal)
+  const page = buildHomePage(goal, ready)
   if (mode === 'create') {
     await bridge.createStartUpPageContainer(page)
     return

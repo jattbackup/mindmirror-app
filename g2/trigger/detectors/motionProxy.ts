@@ -9,7 +9,7 @@ export function createMotionProxyDetector(): Detector & { noteAbnormalExit(): vo
     },
     run(ctx: DetectorContext): DetectorOutput {
       if (abnormalExitAt && ctx.now - abnormalExitAt < 6_000) {
-        return { weight: 0.15, reason: 'motion', phaseHint: 'topic_end' }
+        return { weight: 0.15, reason: 'motion', phaseHint: 'align' }
       }
       return { weight: 0, reason: null }
     },

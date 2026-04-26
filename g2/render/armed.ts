@@ -12,7 +12,9 @@ export function buildArmedPage(state: G2State, now = Date.now()): RebuildPageCon
     `${batteryBlocks(state.batteryLevel)} armed`,
   ].join('  ')
   const transcript = `${state.finalTranscript}${state.provisionalTranscript}`
-  const body = transcript ? truncate(transcript.slice(-LIVE_TAIL_CHARS), LIVE_TAIL_CHARS) : 'Listening...\nGoal alignment starts after 02:00.'
+  const body = transcript
+    ? truncate(transcript.slice(-LIVE_TAIL_CHARS), LIVE_TAIL_CHARS)
+    : `Listening...\nClose goal: ${truncate(state.session.goal, 120)}\nAlignment starts after 02:00.`
 
   return new RebuildPageContainer({
     containerTotalNum: 2,

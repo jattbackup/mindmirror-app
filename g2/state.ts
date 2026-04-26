@@ -1,14 +1,23 @@
-import { CARD_TTL_MS, SESSION_TIMEBOX_MS } from '../_shared/constants'
+import { CARD_TTL_MS, DEFAULT_SALES_GOAL, DEFAULT_SALES_NEXT_ASK, DEFAULT_SALES_OFFER, DEFAULT_SALES_PROSPECT, SESSION_TIMEBOX_MS } from '../_shared/constants'
 import type { CardModel } from './render/card'
 
-export type Screen = 'home' | 'armed' | 'card' | 'recall'
+export type Screen = 'home' | 'onboard' | 'armed' | 'card' | 'finalising' | 'recall'
 
 export type SessionMeta = {
   id: string
   goal: string
+  goalEmbedding: number[]
   participants: string[]
+  prospect: string
+  offer: string
+  successCriteria: string[]
+  knownObjections: string[]
+  nextAsk: string
   startedAt: number | null
   timeboxMs: number
+  alignBaseline: number | null
+  finalAlign: number | null
+  outcome: 'completed' | 'abandoned' | 'timeboxed' | null
 }
 
 export type G2State = {
@@ -20,6 +29,7 @@ export type G2State = {
   finalTranscript: string
   provisionalTranscript: string
   session: SessionMeta
+  onboardingReady: boolean
   currentCard: CardModel | null
   cardHistory: CardModel[]
   cardShownAt: number | null
@@ -43,11 +53,21 @@ const initialState: G2State = {
   provisionalTranscript: '',
   session: {
     id: '',
-    goal: 'Decide next steps and owners.',
+    goal: DEFAULT_SALES_GOAL,
+    goalEmbedding: [],
     participants: [],
+    prospect: DEFAULT_SALES_PROSPECT,
+    offer: DEFAULT_SALES_OFFER,
+    successCriteria: [],
+    knownObjections: [],
+    nextAsk: DEFAULT_SALES_NEXT_ASK,
     startedAt: null,
     timeboxMs: SESSION_TIMEBOX_MS,
+    alignBaseline: null,
+    finalAlign: null,
+    outcome: null,
   },
+  onboardingReady: false,
   currentCard: null,
   cardHistory: [],
   cardShownAt: null,
@@ -78,9 +98,16 @@ export function createG2Store(): G2Store {
         session: {
           ...structuredClone(initialState.session),
           goal: state.session.goal,
+          goalEmbedding: [...state.session.goalEmbedding],
           participants: [...state.session.participants],
+          prospect: state.session.prospect,
+          offer: state.session.offer,
+          successCriteria: [...state.session.successCriteria],
+          knownObjections: [...state.session.knownObjections],
+          nextAsk: state.session.nextAsk,
           timeboxMs: state.session.timeboxMs,
         },
+        onboardingReady: state.onboardingReady,
       }
       emit()
     },

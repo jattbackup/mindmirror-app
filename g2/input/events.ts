@@ -79,14 +79,16 @@ export function normalizeEvenHubEvent(event: EvenHubEvent): NormalizedEvent {
 }
 
 export type InputHandlers = {
+  showOnboarding(): Promise<void>
   startListening(): Promise<void>
   stopListening(finalise?: boolean): Promise<void>
   showPreviousCard(): Promise<void>
   dismissCard(): Promise<void>
   saveCard(): Promise<void>
+  muteDrift(): void
   renderHome(): Promise<void>
   renderArmed(): Promise<void>
-  forceProbe(): void
+  forceMark(): void
   cleanup(): Promise<void>
 }
 
@@ -107,6 +109,11 @@ export async function routeInputEvent(
       await handlers.dismissCard()
       return
     }
+    if (screen === 'onboard') {
+      store.setState({ screen: 'home', previousScreen: screen })
+      await handlers.renderHome()
+      return
+    }
     store.setState({ screen: 'home', previousScreen: screen })
     await handlers.renderHome()
     return
@@ -120,10 +127,12 @@ export async function routeInputEvent(
 
   if (event.kind === 'click') {
     if (screen === 'home') {
+      await handlers.showOnboarding()
+    } else if (screen === 'onboard') {
       await handlers.startListening()
     } else if (screen === 'armed') {
       store.setState({ markedForProbe: true })
-      handlers.forceProbe()
+      handlers.forceMark()
     } else if (screen === 'card') {
       await handlers.saveCard()
     }
@@ -133,6 +142,7 @@ export async function routeInputEvent(
   if (screen === 'card' && event.kind === 'scroll_top') {
     await handlers.showPreviousCard()
   } else if (screen === 'card' && event.kind === 'scroll_bottom') {
+    if (store.getState().currentCard?.kind === 'drift') handlers.muteDrift()
     await handlers.dismissCard()
   }
 }

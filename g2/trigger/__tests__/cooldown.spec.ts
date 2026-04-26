@@ -6,8 +6,8 @@ describe('cooldown', () => {
     expect(canSurface({
       now: 10_000,
       lastSurfaceAt: 5_000,
-      lastReason: 'periodic',
-      nextReason: 'periodic',
+      lastReason: 'tick',
+      nextReason: 'tick',
       cooldownMs: 12_000,
     })).toBe(false)
   })
@@ -16,7 +16,7 @@ describe('cooldown', () => {
     expect(canSurface({
       now: 10_000,
       lastSurfaceAt: 5_000,
-      lastReason: 'periodic',
+      lastReason: 'tick',
       nextReason: 'closing_cue',
       cooldownMs: 12_000,
     })).toBe(true)

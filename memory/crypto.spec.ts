@@ -20,12 +20,17 @@ describe('memory crypto', () => {
       sessionId: 'sess1',
       startedAt: 1,
       endedAt: 2,
-      triggerThatClosedIt: 'periodic',
+      kind: 'recap',
+      triggerThatFiredIt: 'tick',
       summary: 'Plaintext should not be visible',
       bullets: ['Plaintext should not be visible'],
       actionItems: [],
       decisions: [],
       embedding: [1, 0, 0],
+      alignScore: null,
+      driftFromBaseline: null,
+      llmSteer: null,
+      wasAccepted: null,
       transcript: 'Plaintext should not be visible',
     })
     const joined = Array.from(bridge.map.values()).join('\n')

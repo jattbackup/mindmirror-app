@@ -1,17 +1,18 @@
 import { useState } from 'react'
 import { SetupPage } from './pages/Setup'
+import { OnboardingPage } from './pages/Onboarding'
 import { SessionsPage } from './pages/Sessions'
 import { SearchPage } from './pages/Search'
 import { PrivacyPage } from './pages/Privacy'
 
-type Tab = 'setup' | 'sessions' | 'search' | 'privacy'
+type Tab = 'setup' | 'onboarding' | 'sessions' | 'search' | 'privacy'
 
 export function CompanionApp(props: {
   status: string
   onConnect(): Promise<void>
   onAction(): Promise<void>
 }) {
-  const [tab, setTab] = useState<Tab>('setup')
+  const [tab, setTab] = useState<Tab>('onboarding')
   const [busy, setBusy] = useState(false)
 
   const run = async (fn: () => Promise<void>) => {
@@ -37,12 +38,13 @@ export function CompanionApp(props: {
         </div>
       </header>
       <nav className="tabs">
-        {(['setup', 'sessions', 'search', 'privacy'] as const).map((item) => (
+        {(['onboarding', 'setup', 'sessions', 'search', 'privacy'] as const).map((item) => (
           <button key={item} className={`tab ${tab === item ? 'active' : ''}`} onClick={() => setTab(item)}>
             {item}
           </button>
         ))}
       </nav>
+      {tab === 'onboarding' && <OnboardingPage />}
       {tab === 'setup' && <SetupPage />}
       {tab === 'sessions' && <SessionsPage />}
       {tab === 'search' && <SearchPage />}
