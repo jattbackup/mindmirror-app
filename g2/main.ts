@@ -19,9 +19,11 @@ import type { Segment } from '../memory/schema'
 import { createBrowserMic, type BrowserMic } from './audio/browser-mic'
 import { createSttClient, type SttClient } from './audio/stt-client'
 import { normalizeEvenHubEvent, routeInputEvent } from './input/events'
+import { buildIntroFrames, MINDMIRROR_ASCII } from './intro/ascii'
 import { renderArmed, updateArmedAlign, updateArmedText } from './render/armed'
 import { renderCard, type CardModel } from './render/card'
 import { renderHome } from './render/home'
+import { rebuildIntro, renderIntroStartup, upgradeIntroFrame } from './render/intro'
 import { renderRecall } from './render/recall'
 import { truncate } from './render/format'
 import { createG2Store, fullTranscript } from './state'
@@ -37,13 +39,18 @@ type Runtime = {
   startupRendered: boolean
   unsubscribeEvents: (() => void) | null
   unsubscribeDevice: (() => void) | null
+  unsubscribeSetup: (() => void) | null
+  introTimer: number | null
+  anchorTimer: number | null
   tickTimer: number | null
   stopTimer: number | null
   renderQueue: Promise<void>
+  finalisedSessions: Set<string>
 }
 
 const store = createG2Store()
 const trigger = createTriggerEngine()
+const INTRO_FRAME_MS = 900
 
 let lastSpeaker: number | null = null
 let coachingActive = false
@@ -58,9 +65,13 @@ const runtime: Runtime = {
   startupRendered: false,
   unsubscribeEvents: null,
   unsubscribeDevice: null,
+  unsubscribeSetup: null,
+  introTimer: null,
+  anchorTimer: null,
   tickTimer: null,
   stopTimer: null,
   renderQueue: Promise.resolve(),
+  finalisedSessions: new Set<string>(),
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -73,6 +84,28 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 function enqueueRender(task: () => Promise<void>): Promise<void> {
   runtime.renderQueue = runtime.renderQueue.then(task, task)
   return runtime.renderQueue
+}
+
+function clearIntroTimer(): void {
+  if (runtime.introTimer) {
+    window.clearInterval(runtime.introTimer)
+    runtime.introTimer = null
+  }
+}
+
+function clearSessionTimers(): void {
+  if (runtime.anchorTimer) {
+    window.clearTimeout(runtime.anchorTimer)
+    runtime.anchorTimer = null
+  }
+  if (runtime.tickTimer) {
+    window.clearInterval(runtime.tickTimer)
+    runtime.tickTimer = null
+  }
+  if (runtime.stopTimer) {
+    window.clearTimeout(runtime.stopTimer)
+    runtime.stopTimer = null
+  }
 }
 
 async function ensureInstallId(bridge: EvenAppBridge): Promise<string> {
@@ -102,6 +135,44 @@ function buildGoalContext(): GoalContext {
     knownObjections: state.session.knownObjections,
     nextAsk: state.session.nextAsk,
   }
+}
+
+// ─── Intro lifecycle ─────────────────────────────────────────────────────────
+
+async function transitionIntroToHome(setStatus: SetStatus): Promise<void> {
+  if (store.getState().screen !== 'intro') return
+  clearIntroTimer()
+  const state = store.getState()
+  store.setState({ screen: 'home', previousScreen: 'intro' })
+  if (runtime.bridge) {
+    await enqueueRender(() => renderHome(runtime.bridge!, state.session.goal, state.session.prospect, 'rebuild'))
+  }
+  await startPassive(setStatus)
+}
+
+async function startIntro(setStatus: SetStatus): Promise<void> {
+  if (!runtime.bridge) return
+  const frames = buildIntroFrames(MINDMIRROR_ASCII)
+  const firstFrame = frames[0] ?? 'MindMirror'
+  store.setState({ screen: 'intro', previousScreen: null })
+
+  if (!runtime.startupRendered) {
+    await enqueueRender(() => renderIntroStartup(runtime.bridge!, firstFrame))
+    runtime.startupRendered = true
+  } else {
+    await enqueueRender(() => rebuildIntro(runtime.bridge!, firstFrame))
+  }
+
+  clearIntroTimer()
+  let frameIndex = 0
+  runtime.introTimer = window.setInterval(() => {
+    frameIndex += 1
+    if (frameIndex >= frames.length) {
+      void transitionIntroToHome(setStatus)
+      return
+    }
+    void enqueueRender(() => upgradeIntroFrame(runtime.bridge!, frames[frameIndex]))
+  }, INTRO_FRAME_MS)
 }
 
 // ─── Drift card (LLM-powered) ───────────────────────────────────────────────
@@ -267,11 +338,13 @@ async function activateCoaching(): Promise<void> {
   appendEventLog(`Coaching activated — ${prospect}`)
 
   // Auto-dismiss anchor after 8 seconds
-  window.setTimeout(async () => {
+  if (runtime.anchorTimer) window.clearTimeout(runtime.anchorTimer)
+  runtime.anchorTimer = window.setTimeout(async () => {
     if (store.getState().currentCard?.ts === anchorTs) {
       store.setState({ screen: 'armed', currentCard: null, cardShownAt: null })
       if (bridge) await renderArmed(bridge, store.getState())
     }
+    runtime.anchorTimer = null
   }, 8000)
 }
 
@@ -358,19 +431,30 @@ async function stopListening(finalise = false): Promise<void> {
   runtime.browserMic?.stop()
   runtime.browserMic = null
   if (bridge) await bridge.audioControl(false)
-  if (runtime.tickTimer) {
-    window.clearInterval(runtime.tickTimer)
-    runtime.tickTimer = null
-  }
+  clearSessionTimers()
   if (finalise && runtime.memory && store.getState().session.id) {
     const s = store.getState()
-    await runtime.memory.finaliseSession(s.session.id, {
-      title: s.currentCard?.title ?? null,
-      finalAlign: s.session.finalAlign,
-      outcome: 'completed',
-    })
+    if (!runtime.finalisedSessions.has(s.session.id)) {
+      runtime.finalisedSessions.add(s.session.id)
+      await runtime.memory.finaliseSession(s.session.id, {
+        title: s.currentCard?.title ?? null,
+        finalAlign: s.session.finalAlign,
+        outcome: 'completed',
+      })
+    }
   }
   appendEventLog('Listening stopped')
+}
+
+async function cleanupRuntime(finalise = false): Promise<void> {
+  clearIntroTimer()
+  await stopListening(finalise)
+  runtime.unsubscribeEvents?.()
+  runtime.unsubscribeDevice?.()
+  runtime.unsubscribeSetup?.()
+  runtime.unsubscribeEvents = null
+  runtime.unsubscribeDevice = null
+  runtime.unsubscribeSetup = null
 }
 
 // ─── Trigger subscription ────────────────────────────────────────────────────
@@ -391,6 +475,7 @@ function registerTriggerSubscription(setStatus: SetStatus): void {
       await surfaceCard(card, event)
       if (event.reason === 'closing_cue') {
         setStatus('Wrap detected; finalising after silence')
+        if (runtime.stopTimer) window.clearTimeout(runtime.stopTimer)
         runtime.stopTimer = window.setTimeout(() => void stopListening(true), WRAP_SILENCE_STOP_MS)
       }
     })()
@@ -410,6 +495,7 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
     }
     if (event.kind === 'abnormal_exit') trigger.noteAbnormalExit()
     void routeInputEvent(bridge, store, event, {
+      skipIntro: () => transitionIntroToHome(setStatus),
       startListening: () => activateCoaching(),
       stopListening,
       showPreviousCard: async () => {
@@ -433,13 +519,7 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
         if (runtime.bridge) await renderArmed(runtime.bridge, store.getState())
       },
       forceMark: () => trigger.forceMark(),
-      cleanup: async () => {
-        await stopListening(false)
-        runtime.unsubscribeEvents?.()
-        runtime.unsubscribeDevice?.()
-        runtime.unsubscribeEvents = null
-        runtime.unsubscribeDevice = null
-      },
+      cleanup: () => cleanupRuntime(false),
     }).catch((error) => {
       appendEventLog(`Input route failed: ${error instanceof Error ? error.message : String(error)}`, 'error')
     })
@@ -455,7 +535,8 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
 }
 
 function registerSetupEvents(): void {
-  window.addEventListener('mindmirror:setup', ((event: CustomEvent) => {
+  if (runtime.unsubscribeSetup) return
+  const listener = ((event: CustomEvent) => {
     const detail = event.detail as { goal?: string; participants?: string[]; timeboxMs?: number; passphrase?: string; prospect?: string; offer?: string; nextAsk?: string }
     const state = store.getState()
     store.setState({
@@ -486,7 +567,9 @@ function registerSetupEvents(): void {
       void enqueueRender(() => renderHome(runtime.bridge!, s.session.goal, s.session.prospect, 'rebuild'))
     }
     setStatusRef(`Say "${store.getState().session.prospect || 'client'}" to begin`)
-  }) as EventListener)
+  }) as EventListener
+  window.addEventListener('mindmirror:setup', listener)
+  runtime.unsubscribeSetup = () => window.removeEventListener('mindmirror:setup', listener)
 }
 
 // ─── Exports ─────────────────────────────────────────────────────────────────
@@ -530,19 +613,19 @@ export function createMindMirrorActions(setStatus: SetStatus): AppActions {
         runtime.installId = await ensureInstallId(runtime.bridge)
         runtime.memory = await createMemory({ passphrase: '0000', backendUrl: DEFAULT_BACKEND_URL, bridge: runtime.bridge })
         registerEvents(runtime.bridge, setStatus)
-        const s = store.getState()
-        await enqueueRender(() => renderHome(runtime.bridge!, s.session.goal, s.session.prospect, 'create'))
-        runtime.startupRendered = true
-        await startPassive(setStatus)
+        await startIntro(setStatus)
       } catch (error) {
         appendEventLog(`Bridge unavailable: ${error instanceof Error ? error.message : String(error)}`, 'warn')
         runtime.memory = await createMemory({ passphrase: '0000', backendUrl: DEFAULT_BACKEND_URL })
+        store.setState({ screen: 'home', previousScreen: 'intro' })
         await startPassive(setStatus)
       }
     },
     async action() {
       const state = store.getState()
-      if (!state.isRecording) {
+      if (state.screen === 'intro') {
+        await transitionIntroToHome(setStatus)
+      } else if (!state.isRecording) {
         await startPassive(setStatus)
       } else if (!coachingActive) {
         // Manual coaching start (bypasses name trigger)
@@ -555,11 +638,5 @@ export function createMindMirrorActions(setStatus: SetStatus): AppActions {
 }
 
 window.addEventListener('beforeunload', () => {
-  if (runtime.tickTimer) window.clearInterval(runtime.tickTimer)
-  if (runtime.stopTimer) window.clearTimeout(runtime.stopTimer)
-  runtime.stt?.close()
-  runtime.browserMic?.stop()
-  void runtime.bridge?.audioControl(false)
-  runtime.unsubscribeEvents?.()
-  runtime.unsubscribeDevice?.()
+  void cleanupRuntime(false)
 })

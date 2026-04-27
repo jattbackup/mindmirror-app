@@ -12,31 +12,39 @@ export type SttClient = {
   isOpen(): boolean
 }
 
-type SonioxToken = {
-  text: string
-  is_final: boolean
-  speaker?: number
-}
-
-type SonioxResponse = {
-  tokens?: SonioxToken[]
-  finished?: boolean
-  error_code?: number
-  error_message?: string
-}
+type SttProvider = typeof DEFAULT_STT_PROVIDER
 
 type ConnectResponse = {
   url: string
-  headers?: Record<string, string>
+  provider?: SttProvider
   expiresAt: number
+}
+
+export type SttServerMessage =
+  | { type: 'transcript.delta'; itemId: string; text: string }
+  | { type: 'transcript.final'; itemId: string; text: string }
+  | { type: 'error'; error: string }
+
+export function parseSttServerMessage(raw: string): SttServerMessage | null {
+  const data = JSON.parse(raw) as Partial<SttServerMessage>
+  if (data.type === 'transcript.delta' && typeof data.text === 'string') {
+    return { type: data.type, itemId: String(data.itemId ?? ''), text: data.text }
+  }
+  if (data.type === 'transcript.final' && typeof data.text === 'string') {
+    return { type: data.type, itemId: String(data.itemId ?? ''), text: data.text }
+  }
+  if (data.type === 'error') {
+    return { type: data.type, error: String(data.error ?? 'STT provider error') }
+  }
+  return null
 }
 
 export function createSttClient(opts: {
   backendUrl?: string
   installId: string
-  provider?: 'soniox' | 'deepgram'
-  onFinal(text: string, speaker?: number): void
-  onProvisional(text: string, speaker?: number): void
+  provider?: SttProvider
+  onFinal(text: string): void
+  onProvisional(text: string): void
   onError?(error: Error): void
 }): SttClient {
   const backendUrl = opts.backendUrl ?? DEFAULT_BACKEND_URL
@@ -61,20 +69,7 @@ export function createSttClient(opts: {
       await new Promise<void>((resolve, reject) => {
         ws = new WebSocket(payload.url)
         ws.binaryType = 'arraybuffer'
-        ws.onopen = () => {
-          if (provider === 'soniox') {
-            ws?.send(JSON.stringify({
-              model: 'stt-rt-preview',
-              audio_format: 'pcm_s16le',
-              sample_rate: SAMPLE_RATE,
-              num_channels: 1,
-              enable_endpoint_detection: true,
-              enable_speaker_diarization: true,
-              num_speakers: 2,
-            }))
-          }
-          resolve()
-        }
+        ws.onopen = () => resolve()
         ws.onerror = () => {
           const err = new Error('STT WebSocket error')
           opts.onError?.(err)
@@ -83,34 +78,14 @@ export function createSttClient(opts: {
         ws.onmessage = (event) => {
           if (typeof event.data !== 'string') return
           try {
-            const data = JSON.parse(event.data) as SonioxResponse
-            if (data.error_code) {
-              opts.onError?.(new Error(data.error_message ?? 'STT provider error'))
-              return
-            }
-            const tokens = data.tokens ?? []
-            const finalTokens = tokens.filter((t) => t.is_final && t.text !== '<end>')
-            const provisionalTokens = tokens.filter((t) => !t.is_final)
-
-            // Emit final tokens grouped by speaker
-            if (finalTokens.length > 0) {
-              let currentSpeaker = finalTokens[0].speaker
-              let currentText = ''
-              for (const token of finalTokens) {
-                if (token.speaker !== currentSpeaker) {
-                  if (currentText) opts.onFinal(currentText, currentSpeaker)
-                  currentSpeaker = token.speaker
-                  currentText = token.text
-                } else {
-                  currentText += token.text
-                }
-              }
-              if (currentText) opts.onFinal(currentText, currentSpeaker)
-            }
-
-            if (provisionalTokens.length > 0) {
-              const provisionalText = provisionalTokens.map((t) => t.text).join('')
-              opts.onProvisional(provisionalText, provisionalTokens[0].speaker)
+            const message = parseSttServerMessage(event.data)
+            if (!message) return
+            if (message.type === 'error') {
+              opts.onError?.(new Error(message.error))
+            } else if (message.type === 'transcript.delta') {
+              opts.onProvisional(message.text)
+            } else {
+              opts.onFinal(message.text)
             }
           } catch (error) {
             opts.onError?.(error instanceof Error ? error : new Error(String(error)))

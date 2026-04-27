@@ -11,9 +11,7 @@
       "name": "network",
       "desc": "Connects to the MindMirror backend for speech recognition, summarisation, embeddings, and search.",
       "whitelist": [
-        "http://192.168.2.44:8787",
-        "https://stt-rt.soniox.com",
-        "https://api.openai.com"
+        "http://192.168.2.44:8787"
       ]
     },
     {

@@ -79,6 +79,7 @@ export function normalizeEvenHubEvent(event: EvenHubEvent): NormalizedEvent {
 }
 
 export type InputHandlers = {
+  skipIntro(): Promise<void>
   startListening(): Promise<void>
   stopListening(finalise?: boolean): Promise<void>
   showPreviousCard(): Promise<void>
@@ -100,7 +101,7 @@ export async function routeInputEvent(
   const screen: Screen = store.getState().screen
 
   if (event.kind === 'foreground_enter') {
-    if (!store.getState().isRecording) {
+    if (screen !== 'intro' && !store.getState().isRecording) {
       await handlers.startListening()
     }
     return
@@ -113,7 +114,7 @@ export async function routeInputEvent(
   }
 
   if (event.kind === 'double_click') {
-    if (screen === 'home') {
+    if (screen === 'intro' || screen === 'home') {
       await bridge.shutDownPageContainer(1)
       return
     }
@@ -127,7 +128,9 @@ export async function routeInputEvent(
   }
 
   if (event.kind === 'click') {
-    if (screen === 'home') {
+    if (screen === 'intro') {
+      await handlers.skipIntro()
+    } else if (screen === 'home') {
       await handlers.startListening()
     } else if (screen === 'armed') {
       handlers.forceMark()

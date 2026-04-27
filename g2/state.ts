@@ -1,7 +1,7 @@
 import { CARD_TTL_MS, DEFAULT_SALES_GOAL, DEFAULT_SALES_NEXT_ASK, DEFAULT_SALES_OFFER, DEFAULT_SALES_PROSPECT, SESSION_TIMEBOX_MS } from '../_shared/constants'
 import type { CardModel } from './render/card'
 
-export type Screen = 'home' | 'onboard' | 'armed' | 'card' | 'finalising' | 'recall'
+export type Screen = 'intro' | 'home' | 'onboard' | 'armed' | 'card' | 'finalising' | 'recall'
 
 export type SessionMeta = {
   id: string
@@ -45,7 +45,7 @@ export type G2Store = {
 }
 
 const initialState: G2State = {
-  screen: 'home',
+  screen: 'intro',
   previousScreen: null,
   isRecording: false,
   isWearing: true,

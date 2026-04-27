@@ -8,7 +8,7 @@ describe('app.json', () => {
     expect(manifest.name.length).toBeLessThanOrEqual(20)
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/)
     expect(manifest.min_app_version).toBeTypeOf('string')
-    expect(manifest.min_sdk_version).toBeTypeOf('string')
+    expect(manifest.min_sdk_version).toBe('0.0.10')
     expect(manifest.entrypoint).toBe('index.html')
     expect(Array.isArray(manifest.permissions)).toBe(true)
     expect(manifest.supported_languages).toEqual(['en'])
@@ -16,8 +16,8 @@ describe('app.json', () => {
 
   it('declares microphone and explicit network permissions', () => {
     const network = manifest.permissions.find((permission) => permission.name === 'network')
-    expect(network?.whitelist).toEqual(expect.arrayContaining([
-      'https://mindmirror.example.com',
+    expect(network?.whitelist).toEqual(['http://192.168.2.44:8787'])
+    expect(network?.whitelist).not.toEqual(expect.arrayContaining([
       'https://stt-rt.soniox.com',
       'https://api.openai.com',
     ]))

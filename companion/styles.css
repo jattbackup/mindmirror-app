@@ -45,6 +45,15 @@ select {
   gap: 2px;
 }
 
+.ascii-brand {
+  margin: 0 0 6px;
+  color: #232323;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  line-height: 1;
+  white-space: pre;
+}
+
 .brand h1 {
   margin: 0;
   font-size: 24px;

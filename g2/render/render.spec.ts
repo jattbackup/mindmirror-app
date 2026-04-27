@@ -3,8 +3,10 @@ import { buildArmedPage } from './armed'
 import { buildCardPage } from './card'
 import { buildFinalisingPage } from './finalising'
 import { buildHomePage } from './home'
+import { buildIntroPage } from './intro'
 import { buildOnboardingPage } from './onboarding'
 import { buildRecallPage } from './recall'
+import { buildIntroFrames, MINDMIRROR_ASCII } from '../intro/ascii'
 import type { G2State } from '../state'
 
 function textObjects(page: unknown): Array<{ isEventCapture?: number; content?: string }> {
@@ -57,6 +59,7 @@ const state: G2State = {
 describe('G2 renderers', () => {
   it('keeps every page simulator safe with one event capture container', () => {
     for (const page of [
+      buildIntroPage(buildIntroFrames(MINDMIRROR_ASCII)[0]),
       buildHomePage(state.session.goal, 'Prospect'),
       buildOnboardingPage(state.session),
       buildArmedPage(state, 0),

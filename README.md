@@ -66,8 +66,7 @@ is **never** persisted at rest — only encrypted transcripts and summaries.
 | npm                      | ≥ 10.x             | Or pnpm/yarn — examples below use npm                      |
 | macOS / Linux / WSL2     | any recent         | Windows native works; macOS recommended for the Even App   |
 | Even Realities account   | —                  | Needed only for QR-pairing real G2 hardware                |
-| OpenAI API key           | —                  | Backend uses it for summarise + embeddings                 |
-| Soniox API key           | —                  | Backend proxies the realtime STT WebSocket                 |
+| OpenAI API key           | —                  | Backend uses it for STT, summarise, and embeddings         |
 
 You do **not** need a physical pair of G2 glasses to run the app — the
 `@evenrealities/evenhub-simulator` (a devDependency) renders the dual 576 × 288
@@ -123,13 +122,12 @@ runtime; the env var is only used until the user picks a host.
 ```bash
 # server/.env
 OPENAI_API_KEY=sk-...
-SONIOX_API_KEY=...
 PORT=8787                # optional, defaults to 8787
 ALLOWED_ORIGIN=*         # tighten before shipping (see SPEC §7 / C10)
 ```
 
-Keys are **never** sent to the WebView — the backend signs short-lived STT
-tokens and proxies LLM calls.
+Keys are **never** sent to the WebView — the backend owns OpenAI calls and
+proxies realtime STT, summarise, embedding, and scoring requests.
 
 ### `app.json` whitelist
 
@@ -151,7 +149,7 @@ The simulator binary ships with the npm package — no separate install. Verify
 it's discoverable:
 
 ```bash
-npx evenhub --version
+npx evenhub-simulator --version
 ```
 
 ### Two-terminal workflow (recommended)
@@ -167,18 +165,18 @@ npm run dev
 `npm run dev` runs `vite --host 0.0.0.0 --port 5173` so the simulator (and a
 real phone on the same LAN) can reach it.
 
-**Terminal 2 — simulator + backend:**
+**Terminal 2 — backend:**
 
 ```bash
 # Backend (STT / LLM / embed)
 cd server
-OPENAI_API_KEY=... SONIOX_API_KEY=... npm run dev   # listens on :8787
+OPENAI_API_KEY=... npm run dev   # listens on :8787
 ```
 
 **Terminal 3 — the simulator window:**
 
 ```bash
-npx evenhub simulate --url http://localhost:5173
+npx evenhub-simulator http://localhost:5173 --automation-port 9898
 ```
 
 The simulator opens with two stacked 576×288 canvases. Controls:
@@ -190,12 +188,13 @@ The simulator opens with two stacked 576×288 canvases. Controls:
 - **`F5`** → force reload the WebView
 
 When the page loads you'll see MindMirror auto-connect (per C11), draw the
-`onboard` card, and wait for a tap.
+ASCII intro, then transition to the home listening screen. Tap during the
+intro to skip it; double-tap on intro or home exits.
 
 ### Faster: simulator + Vite in one terminal
 
 ```bash
-npm run dev & npx evenhub simulate --url http://localhost:5173
+npm run dev & npx evenhub-simulator http://localhost:5173 --automation-port 9898
 ```
 
 If you'd rather not juggle terminals, install
@@ -219,7 +218,7 @@ pages keep the ceiling in mind — the spec calls this out at C12 / §6.
 4. Open the **Even App** on your phone, choose **Scan QR**, and point it at
    the terminal output.
 5. The app loads on the G2 within ~6 s and auto-connects (C11).
-6. Tap the `onboard` card to start a session. (The companion `Setup` page is
+6. Wait for the intro to transition to home, then tap to start a session. (The companion `Setup` page is
    the easiest place to enter the goal.)
 
 ---
@@ -232,8 +231,8 @@ Routes:
 | Method | Path              | Purpose                                            |
 | ------ | ----------------- | -------------------------------------------------- |
 | GET    | `/health`         | Liveness probe                                     |
-| POST   | `/stt/connect`    | Mints a short-lived Soniox session token          |
-| WS     | `/stt/ws`         | Proxies PCM frames to Soniox realtime STT         |
+| POST   | `/stt/connect`    | Returns a backend-owned STT WebSocket URL         |
+| WS     | `/stt/ws`         | Proxies PCM frames to OpenAI realtime STT         |
 | POST   | `/llm/summarise`  | LLM tick → `{title, bullets, actionItems, ...}`   |
 | POST   | `/embed`          | Batch text embeddings                              |
 | POST   | `/goal/embed`     | Embeds the onboarding goal string                 |
@@ -249,7 +248,8 @@ npm run dev          # tsx watch mode
 npm run build && npm start
 ```
 
-The server reads `OPENAI_API_KEY` and `SONIOX_API_KEY` from the environment.
+The server reads `OPENAI_API_KEY` from the environment for STT, summarise,
+embedding, and scoring calls.
 Rate limiting is per `installId` (bridge install token).
 
 ---
@@ -293,6 +293,7 @@ Coverage hot-spots:
 ## Packaging for Even Hub
 
 ```bash
+npm run build
 npm run pack
 # 1. vite build → dist/
 # 2. evenhub pack app.json dist -o mindmirror.ehpk
@@ -300,6 +301,8 @@ npm run pack
 
 Notes:
 
+- The simulator workflow loads the dev URL (`http://localhost:5173`). The
+  `.ehpk` is for Even Hub packaging, install, and submission.
 - `mindmirror.ehpk` is gitignored and re-generated on every `npm run pack`.
 - Update `app.json` `version` and `permissions.network.whitelist` before
   submitting to Even Hub.
@@ -323,7 +326,7 @@ The fixture lives in `fixtures/demo/`:
 fixtures/demo/
 ├── README.md         instructions
 ├── goal.txt          the onboarding goal string
-├── transcript.json   timestamped Soniox tokens (~10 min)
+├── transcript.json   timestamped transcript tokens (~10 min)
 └── expected.json     { tickIndex, expectedAlign, expectedKind }
 ```
 

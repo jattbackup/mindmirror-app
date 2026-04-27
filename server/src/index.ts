@@ -1,8 +1,9 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { WebSocketServer, WebSocket } from 'ws'
+import { WebSocketServer } from 'ws'
 import { corsHeaders, getInstallId } from './lib/auth.js'
+import { loadServerEnv } from './lib/env.js'
 import { createRateLimiter } from './lib/ratelimit.js'
 import { safeLog } from './lib/redact.js'
 import { embedTexts } from './routes/embed.js'
@@ -12,8 +13,10 @@ import { driftCoach } from './routes/llm.drift.js'
 import { summarise } from './routes/llm.summarise.js'
 import { searchSegments } from './routes/search.js'
 import { sttConnect, type SttConnectRequest } from './routes/stt.connect.js'
+import { attachOpenAiRealtimeStt } from './routes/stt.openai.js'
 
 const limiter = createRateLimiter()
+loadServerEnv()
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = []
@@ -90,32 +93,7 @@ export function createMindMirrorServer() {
       socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (client) => {
-      const upstream = new WebSocket('wss://stt-rt.soniox.com/transcribe-websocket')
-      upstream.on('open', () => {
-        client.on('message', (data) => {
-          if (typeof data === 'string' || data instanceof Buffer) {
-            const asText = data.toString()
-            if (asText.startsWith('{')) {
-              try {
-                const config = JSON.parse(asText)
-                upstream.send(JSON.stringify({ ...config, api_key: process.env.SONIOX_API_KEY }))
-                return
-              } catch {
-                // Fall through to proxy raw data.
-              }
-            }
-          }
-          if (upstream.readyState === WebSocket.OPEN) upstream.send(data)
-        })
-      })
-      upstream.on('message', (data) => {
-        if (client.readyState === WebSocket.OPEN) client.send(data)
-      })
-      upstream.on('close', () => client.close())
-      upstream.on('error', () => client.close())
-      client.on('close', () => upstream.close())
-    })
+    wss.handleUpgrade(req, socket, head, (client) => attachOpenAiRealtimeStt(client))
   })
 
   return server

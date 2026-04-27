@@ -31,6 +31,6 @@ export const DEFAULT_SALES_PROSPECT = 'Prospect'
 export const DEFAULT_SALES_OFFER = 'MindMirror pilot'
 export const DEFAULT_SALES_NEXT_ASK = 'Confirm the next meeting and owner.'
 
-export const DEFAULT_STT_PROVIDER = 'soniox'
+export const DEFAULT_STT_PROVIDER = 'openai'
 export const DEFAULT_LLM_PROVIDER = 'openai'
 export const DEFAULT_BACKEND_URL = import.meta.env?.VITE_MM_BACKEND_URL || '/api'

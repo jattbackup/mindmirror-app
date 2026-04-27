@@ -1,8 +1,11 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AppModule } from '../_shared/app-types'
+import { installConsoleRedaction } from '../_shared/log'
 import { CompanionApp } from '../companion/ui'
 import '../companion/styles.css'
+
+installConsoleRedaction()
 
 async function boot() {
   const module = await import('../g2/index')

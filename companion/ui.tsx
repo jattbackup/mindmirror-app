@@ -4,6 +4,7 @@ import { SessionsPage } from './pages/Sessions'
 import { SearchPage } from './pages/Search'
 import { PrivacyPage } from './pages/Privacy'
 import { TranscriptPage } from './pages/Transcript'
+import { MINDMIRROR_ASCII } from '../g2/intro/ascii'
 
 type Tab = 'transcript' | 'setup' | 'sessions' | 'search' | 'privacy'
 
@@ -37,6 +38,9 @@ export function CompanionApp(props: {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
+          <pre className="ascii-brand" aria-label="MindMirror">
+            {MINDMIRROR_ASCII}
+          </pre>
           <h1>MindMirror</h1>
           <span className="status">{props.status}</span>
         </div>
