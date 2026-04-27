@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(everything-evenhub:test-with-simulator)",
+      "Skill(everything-evenhub:test-with-simulator:*)",
+      "PowerShell(Get-Command evenhub-simulator -ErrorAction SilentlyContinue)",
+      "PowerShell(npm list -g @evenrealities/evenhub-simulator 2>&1)",
+      "PowerShell(npm install -g @evenrealities/evenhub-simulator 2>&1)",
+      "PowerShell(Start-Process \"http://localhost:5173\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(ipconfig)",
+      "Bash(grep -v \"^\\\\-\\\\-$\")",
+      "WebFetch(domain:hub.evenrealities.com)",
+      "Skill(everything-evenhub:build-and-deploy)",
+      "Skill(everything-evenhub:build-and-deploy:*)"
+    ]
+  }
+}

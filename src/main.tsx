@@ -13,6 +13,7 @@ async function boot() {
 
   let status = app.initialStatus ?? `${app.name} ready`
   let alignScore: number | null = null
+  let transcript = ''
 
   const actions = await app.createActions((text) => {
     status = text
@@ -25,6 +26,7 @@ async function boot() {
         <CompanionApp
           status={status}
           alignScore={alignScore}
+          transcript={transcript}
           onConnect={actions.connect}
           onAction={actions.action}
         />
@@ -39,8 +41,11 @@ async function boot() {
 
   const { getMindMirrorStore } = await import('../g2/main')
   getMindMirrorStore().subscribe((state) => {
-    if (state.lastAlignScore !== alignScore) {
+    const newTranscript = state.finalTranscript + (state.provisionalTranscript ? ` ${state.provisionalTranscript}` : '')
+    const changed = state.lastAlignScore !== alignScore || newTranscript !== transcript
+    if (changed) {
       alignScore = state.lastAlignScore
+      transcript = newTranscript
       render()
     }
   })

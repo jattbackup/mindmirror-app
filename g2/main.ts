@@ -278,35 +278,26 @@ async function activateCoaching(): Promise<void> {
 // ─── Audio / STT ─────────────────────────────────────────────────────────────
 
 function onFinalText(text: string, speaker?: number): void {
-  if (coachingActive) {
-    const prefix = speakerPrefix(speaker)
-    const labeled = prefix + text
-    store.setState((current) => ({ finalTranscript: current.finalTranscript + labeled, provisionalTranscript: '' }))
-    trigger.onFinalTranscript(labeled)
-    if (runtime.bridge && store.getState().screen === 'armed') {
-      void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
-    }
-  } else {
-    // Passive: check for prospect name trigger
-    const prospect = store.getState().session.prospect
-    if (prospect && text.toLowerCase().includes(prospect.toLowerCase())) {
-      void activateCoaching()
-    }
+  if (!coachingActive) {
+    void activateCoaching()
+  }
+  const prefix = speakerPrefix(speaker)
+  const labeled = prefix + text
+  store.setState((current) => ({ finalTranscript: current.finalTranscript + labeled, provisionalTranscript: '' }))
+  trigger.onFinalTranscript(labeled)
+  if (runtime.bridge && store.getState().screen === 'armed') {
+    void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
   }
 }
 
 function onProvisionalText(text: string): void {
-  if (coachingActive) {
-    store.setState({ provisionalTranscript: text })
-    trigger.onProvisionalTranscript(text)
-    if (runtime.bridge && store.getState().screen === 'armed') {
-      void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
-    }
-  } else {
-    const prospect = store.getState().session.prospect
-    if (prospect && text.toLowerCase().includes(prospect.toLowerCase())) {
-      void activateCoaching()
-    }
+  if (!coachingActive) {
+    void activateCoaching()
+  }
+  store.setState({ provisionalTranscript: text })
+  trigger.onProvisionalTranscript(text)
+  if (runtime.bridge && store.getState().screen === 'armed') {
+    void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
   }
 }
 

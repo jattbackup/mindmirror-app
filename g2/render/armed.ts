@@ -17,7 +17,7 @@ export function buildArmedPage(state: G2State, now = Date.now()): RebuildPageCon
   const transcript = `${state.finalTranscript}${state.provisionalTranscript}`
   const body = transcript
     ? truncate(transcript.slice(-LIVE_TAIL_CHARS), LIVE_TAIL_CHARS)
-    : `Listening...\nGoal: ${truncate(state.session.goal, 100)}`
+    : 'Listening...'
 
   return new RebuildPageContainer({
     containerTotalNum: 2,
@@ -55,7 +55,7 @@ export async function renderArmed(bridge: EvenAppBridge, state: G2State): Promis
 
 export async function updateArmedText(bridge: EvenAppBridge, state: G2State): Promise<void> {
   const transcript = `${state.finalTranscript}${state.provisionalTranscript}`
-  const content = transcript ? truncate(transcript.slice(-LIVE_TAIL_CHARS), LIVE_TAIL_CHARS) : 'Listening...'
+  const content = truncate(transcript.slice(-LIVE_TAIL_CHARS) || 'Listening...', LIVE_TAIL_CHARS)
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
     containerID: 2,
     containerName: 'armed-body',
