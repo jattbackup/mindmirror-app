@@ -15,6 +15,9 @@ export type CardModel = {
   title: string
   bullets: string[]
   steer?: string
+  alert?: string
+  strategy?: string
+  bridgeScript?: string
   alignScore?: number
   driftFromBaseline?: number
   footerHint?: string
@@ -42,14 +45,17 @@ function headerFor(card: CardModel): string {
 
 function bodyFor(card: CardModel): string {
   if (card.kind === 'drift') {
-    const observation = truncate(card.bullets[0] ?? 'The conversation has moved away from the close goal.', 140)
-    const steer = truncate(card.steer ?? 'Let us lock the next step before time runs out.', 90)
+    const alert = truncate(card.alert ?? card.bullets[0] ?? 'Conversation moved off the close goal.', 54)
+    const strategy = truncate(card.strategy ?? 'Off-topic talk burns time and deal momentum.', 54)
+    const bridge = truncate(card.bridgeScript ?? card.steer ?? 'Shall we return to the goal now?', 72)
+    const bar = progressBar(card.alignScore ?? 0)
+    const pct = card.alignScore != null ? ` ${Math.round(card.alignScore * 100)}%` : ''
     return [
-      `❝ ${observation} ❞`,
+      `[DIVERSION]: ${alert}`,
+      `[STRATEGY]: ${strategy}`,
+      `[BRIDGE]: ${bridge}`,
       '',
-      `> steer: "${steer}"`,
-      '',
-      progressBar(card.alignScore ?? 0),
+      `${bar}${pct}`,
     ].join('\n')
   }
   if (card.kind === 'actions') {

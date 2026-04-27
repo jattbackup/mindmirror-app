@@ -8,10 +8,6 @@ import type { AppActions, SetStatus } from '../_shared/app-types'
 import {
   CARD_MAX_BULLETS,
   DEFAULT_BACKEND_URL,
-  DEFAULT_SALES_GOAL,
-  DEFAULT_SALES_NEXT_ASK,
-  DEFAULT_SALES_OFFER,
-  DEFAULT_SALES_PROSPECT,
   DRIFT_MUTE_MS,
   INSTALL_ID_KEY,
   TICK_MS,
@@ -20,24 +16,23 @@ import {
 import { appendEventLog } from '../_shared/log'
 import { createMemory, type Memory, type SearchHit } from '../memory'
 import type { Segment } from '../memory/schema'
+import { createBrowserMic, type BrowserMic } from './audio/browser-mic'
 import { createSttClient, type SttClient } from './audio/stt-client'
 import { normalizeEvenHubEvent, routeInputEvent } from './input/events'
-import { renderArmed, updateArmedText } from './render/armed'
+import { renderArmed, updateArmedAlign, updateArmedText } from './render/armed'
 import { renderCard, type CardModel } from './render/card'
-import { renderFinalising } from './render/finalising'
 import { renderHome } from './render/home'
-import { renderOnboarding } from './render/onboarding'
 import { renderRecall } from './render/recall'
 import { truncate } from './render/format'
-import { startSession, type SessionHandle } from './session/lifecycle'
 import { createG2Store, fullTranscript } from './state'
-import { createTriggerEngine, type TriggerEvent } from './trigger'
+import { createTriggerEngine, type GoalContext, type TriggerEvent } from './trigger'
 import { vectorFromText } from '../memory/vectorIndex'
 
 type Runtime = {
   bridge: EvenAppBridge | null
   memory: Memory | null
   stt: SttClient | null
+  browserMic: BrowserMic | null
   installId: string
   startupRendered: boolean
   unsubscribeEvents: (() => void) | null
@@ -45,16 +40,20 @@ type Runtime = {
   tickTimer: number | null
   stopTimer: number | null
   renderQueue: Promise<void>
-  sessionHandle: SessionHandle | null
 }
 
 const store = createG2Store()
-const trigger = createTriggerEngine({ backendUrl: DEFAULT_BACKEND_URL })
+const trigger = createTriggerEngine()
+
+let lastSpeaker: number | null = null
+let coachingActive = false
+let setStatusRef: SetStatus = () => {}
 
 const runtime: Runtime = {
   bridge: null,
   memory: null,
   stt: null,
+  browserMic: null,
   installId: '',
   startupRendered: false,
   unsubscribeEvents: null,
@@ -62,16 +61,12 @@ const runtime: Runtime = {
   tickTimer: null,
   stopTimer: null,
   renderQueue: Promise.resolve(),
-  sessionHandle: null,
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error(`Operation timed out after ${timeoutMs}ms`)), timeoutMs)
-    promise
-      .then(resolve)
-      .catch(reject)
-      .finally(() => window.clearTimeout(timer))
+    promise.then(resolve).catch(reject).finally(() => window.clearTimeout(timer))
   })
 }
 
@@ -88,435 +83,330 @@ async function ensureInstallId(bridge: EvenAppBridge): Promise<string> {
   return id
 }
 
+function speakerPrefix(speaker: number | undefined): string {
+  if (speaker === undefined || lastSpeaker === speaker) return ''
+  lastSpeaker = speaker
+  return `\n[${speaker === 0 ? 'You' : 'Client'}]: `
+}
+
+function buildGoalContext(): GoalContext {
+  const state = store.getState()
+  return {
+    sessionId: state.session.id || ulid(),
+    goal: state.session.goal,
+    goalEmbedding: new Float32Array(state.session.goalEmbedding),
+    timeboxMs: state.session.timeboxMs,
+    prospect: state.session.prospect,
+    offer: state.session.offer,
+    successCriteria: state.session.successCriteria,
+    knownObjections: state.session.knownObjections,
+    nextAsk: state.session.nextAsk,
+  }
+}
+
+// ─── Drift card (LLM-powered) ───────────────────────────────────────────────
+
+async function buildDriftCard(event: TriggerEvent): Promise<CardModel> {
+  const state = store.getState()
+  const transcript = fullTranscript(state)
+  try {
+    const response = await fetch(`${DEFAULT_BACKEND_URL}/llm/drift-coach`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcriptTail: transcript.slice(-800), goal: state.session.goal }),
+    })
+    if (response.ok) {
+      const data = await response.json() as { alert: string; strategy: string; bridgeScript: string }
+      return {
+        kind: 'drift',
+        title: 'Diversion Alert',
+        bullets: [data.alert],
+        alert: data.alert,
+        strategy: data.strategy,
+        bridgeScript: data.bridgeScript,
+        alignScore: event.alignScore ?? undefined,
+        driftFromBaseline: event.driftFromBaseline ?? undefined,
+        footerHint: '▼ dismiss  ● mute drift',
+        tickIndex: event.tickIndex,
+        ts: event.surfaceAt,
+      }
+    }
+  } catch { /* fall through */ }
+  return summariseLocally(event)
+}
+
 function summariseLocally(event: TriggerEvent): CardModel {
   const state = store.getState()
   const transcript = fullTranscript(state)
   const tail = transcript.slice(-1200)
-  const sentences = tail
-    .split(/[.!?\n]+/)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 12)
+  const sentences = tail.split(/[.!?\n]+/).map((s) => s.trim()).filter((s) => s.length > 12)
   const selected = sentences.slice(-CARD_MAX_BULLETS)
   const title =
-    event.kind === 'actions' ? 'Close actions'
-    : event.kind === 'drift' ? 'Drift alert'
+    event.reason === 'closing_cue' ? 'Final actions'
+    : event.reason === 'drift_breach' ? 'Drift alert'
     : event.reason === 'manual_mark' ? 'Marked moment'
-    : event.phase === 'warmup' ? 'Sales warmup'
-    : 'Toward close'
-
-  const bullets = event.kind === 'drift'
-    ? [`Last exchange moved away from ${state.session.goal}`]
-    : selected.length
-      ? selected
-      : [`Toward close: ${state.session.nextAsk}`]
-
+    : 'Recap'
+  const bullets = event.reason === 'drift_breach'
+    ? [`Bring the conversation back to: ${state.session.goal}`]
+    : selected.length ? selected : ['Conversation active; not enough content yet.']
   return {
-    kind: event.kind === 'actions' ? 'actions' : event.kind === 'drift' ? 'drift' : 'recap',
+    kind: event.reason === 'closing_cue' ? 'actions' : event.reason === 'drift_breach' ? 'drift' : 'recap',
     title,
     bullets,
-    steer: event.kind === 'drift' ? `Let's return to ${truncate(state.session.nextAsk || state.session.goal, 64)}.` : undefined,
-    footerHint: event.kind === 'actions'
-      ? '● save session  ▼ end'
-      : event.kind === 'drift'
-        ? '▲ ignore  ● accept  ▼ mute drift'
-        : '▲ prev  ● mark  ▼ dismiss',
     alignScore: event.alignScore ?? undefined,
     driftFromBaseline: event.driftFromBaseline ?? undefined,
+    footerHint: event.reason === 'closing_cue' ? '● save session  ▼ end' : '▲ prev  ● save  ▼ dismiss',
     tickIndex: event.tickIndex,
-    elapsedMs: event.surfaceAt - (state.session.startedAt ?? event.surfaceAt),
-    timeboxMs: state.session.timeboxMs,
     ts: event.surfaceAt,
   }
 }
 
-async function summariseForEvent(event: TriggerEvent): Promise<CardModel> {
-  const fallback = summariseLocally(event)
-  if (event.kind === 'heartbeat') return fallback
-  const state = store.getState()
-  const priorSummaries = state.cardHistory.flatMap((card) => card.bullets).slice(-12)
-  try {
-    const response = await fetch(`${DEFAULT_BACKEND_URL.replace(/\/$/, '')}/llm/summarise`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-mm-install-id': runtime.installId,
-      },
-      body: JSON.stringify({
-        transcriptTail: fullTranscript(state).slice(-8_000),
-        phase: event.phase,
-        goal: [
-          state.session.goal,
-          state.session.successCriteria.join(' '),
-          state.session.knownObjections.join(' '),
-          state.session.nextAsk,
-        ].filter(Boolean).join(' '),
-        priorSummaries,
-        alignScore: event.alignScore,
-        driftFromBaseline: event.driftFromBaseline,
-        style: event.kind === 'actions' ? 'actions' : event.kind === 'drift' ? 'drift' : 'recap',
-      }),
-    })
-    if (!response.ok) return fallback
-    const json = await response.json() as {
-      title?: string
-      bullets?: string[]
-      steer?: string | null
-    }
-    return {
-      ...fallback,
-      title: truncate(json.title ?? fallback.title, 60),
-      bullets: (json.bullets?.length ? json.bullets : fallback.bullets).slice(0, CARD_MAX_BULLETS),
-      steer: json.steer ?? fallback.steer,
-    }
-  } catch {
-    return fallback
-  }
-}
+// ─── Memory ──────────────────────────────────────────────────────────────────
 
-async function appendCardSegment(card: CardModel, event: TriggerEvent): Promise<string | null> {
+async function appendCardSegment(card: CardModel, event: TriggerEvent): Promise<void> {
   const state = store.getState()
-  if (!runtime.memory || !state.session.id) return null
+  if (!runtime.memory || !state.session.id) return
   const transcript = fullTranscript(state)
-  const text = `${card.title} ${card.bullets.join(' ')} ${card.steer ?? ''}`
-  const segmentId = card.segmentId ?? ulid()
+  const text = `${card.title} ${card.bullets.join(' ')}`
   const segment: Segment = {
-    id: segmentId,
+    id: ulid(),
     sessionId: state.session.id,
     startedAt: Math.max(state.session.startedAt ?? event.surfaceAt, event.surfaceAt - TICK_MS),
     endedAt: event.surfaceAt,
-    kind: event.kind,
+    kind: card.kind === 'memory-hit' ? 'recap' : card.kind,
     triggerThatFiredIt: event.reason,
     summary: truncate(text, 500),
     bullets: card.bullets.slice(0, CARD_MAX_BULLETS),
-    actionItems: event.kind === 'actions' ? extractActionItems(card.bullets) : [],
-    decisions: event.kind === 'actions' ? card.bullets : [],
+    actionItems: event.reason === 'closing_cue' ? extractActionItems(card.bullets) : [],
+    decisions: event.reason === 'closing_cue' ? card.bullets : [],
     embedding: vectorFromText(text),
-    alignScore: event.alignScore,
-    driftFromBaseline: event.driftFromBaseline,
-    llmSteer: card.steer ?? null,
-    wasAccepted: event.kind === 'drift' ? false : null,
-    transcript,
-  }
-  await runtime.memory.appendSegment(segment)
-  return segmentId
-}
-
-function extractActionItems(bullets: string[]) {
-  return bullets
-    .filter((bullet) => /\b(send|review|draft|spec|decide|follow|ship|defer)\b/i.test(bullet))
-    .slice(0, 5)
-    .map((bullet) => ({ who: null, what: bullet, due: null }))
-}
-
-async function appendHeartbeat(event: TriggerEvent): Promise<void> {
-  const state = store.getState()
-  if (!runtime.memory || !state.session.id) return
-  await runtime.memory.appendSegment({
-    id: ulid(),
-    sessionId: state.session.id,
-    startedAt: event.surfaceAt,
-    endedAt: event.surfaceAt,
-    kind: 'heartbeat',
-    triggerThatFiredIt: 'tick',
-    summary: '',
-    bullets: [],
-    actionItems: [],
-    decisions: [],
-    embedding: [],
     alignScore: event.alignScore,
     driftFromBaseline: event.driftFromBaseline,
     llmSteer: null,
     wasAccepted: null,
-  })
+    transcript,
+  }
+  await runtime.memory.appendSegment(segment)
+}
+
+function extractActionItems(bullets: string[]) {
+  return bullets
+    .filter((b) => /\b(send|review|draft|spec|decide|follow|ship|defer)\b/i.test(b))
+    .slice(0, 5)
+    .map((b) => ({ who: null, what: b, due: null }))
 }
 
 async function surfaceCard(card: CardModel, event: TriggerEvent): Promise<void> {
   const prev = store.getState().screen
-  const segmentId = await appendCardSegment(card, event)
-  const nextCard = segmentId ? { ...card, segmentId } : card
   store.setState((state) => ({
     screen: 'card',
     previousScreen: prev,
-    currentCard: nextCard,
-    cardHistory: [...state.cardHistory, nextCard],
+    currentCard: card,
+    cardHistory: [...state.cardHistory, card],
     cardShownAt: Date.now(),
   }))
   await enqueueRender(async () => {
-    if (runtime.bridge) await renderCard(runtime.bridge, nextCard, 'rebuild')
+    if (runtime.bridge) await renderCard(runtime.bridge, card, 'rebuild')
   })
+  await appendCardSegment(card, event)
 }
 
-type SalesOnboardingDetail = {
-  prospect?: string
-  participants?: string[]
-  offer?: string
-  goal?: string
-  successCriteria?: string[]
-  knownObjections?: string[]
-  nextAsk?: string
-  timeboxMs?: number
-  passphrase?: string
-}
+// ─── Coaching activation ─────────────────────────────────────────────────────
 
-async function prepareSalesOnboarding(detail: SalesOnboardingDetail, setStatus?: SetStatus): Promise<void> {
-  const state = store.getState()
-  const session = {
-    ...state.session,
-    prospect: detail.prospect || state.session.prospect || DEFAULT_SALES_PROSPECT,
-    participants: detail.participants ?? state.session.participants,
-    offer: detail.offer || state.session.offer || DEFAULT_SALES_OFFER,
-    goal: detail.goal || state.session.goal || DEFAULT_SALES_GOAL,
-    successCriteria: detail.successCriteria ?? state.session.successCriteria,
-    knownObjections: detail.knownObjections ?? state.session.knownObjections,
-    nextAsk: detail.nextAsk || state.session.nextAsk || DEFAULT_SALES_NEXT_ASK,
-    timeboxMs: detail.timeboxMs ?? state.session.timeboxMs,
-  }
+async function activateCoaching(): Promise<void> {
+  if (coachingActive) return
+  coachingActive = true
 
-  store.setState({ session, onboardingReady: true })
-
-  if (detail.passphrase) {
-    runtime.memory = await createMemory({
-      passphrase: detail.passphrase,
-      backendUrl: DEFAULT_BACKEND_URL,
-      bridge: runtime.bridge ?? undefined,
-    })
-  }
-
-  try {
-    runtime.sessionHandle = await startSession({
-      goal: session.goal,
-      participants: session.participants,
-      timeboxMs: session.timeboxMs,
-      prospect: session.prospect,
-      offer: session.offer,
-      successCriteria: session.successCriteria,
-      knownObjections: session.knownObjections,
-      nextAsk: session.nextAsk,
-    }, { backendUrl: DEFAULT_BACKEND_URL })
-    store.setState((current) => ({
-      session: {
-        ...current.session,
-        id: runtime.sessionHandle!.sessionId,
-        startedAt: runtime.sessionHandle!.startedAt,
-        goalEmbedding: Array.from(runtime.sessionHandle!.goalEmbedding),
-      },
-    }))
-    if (runtime.memory) {
-      await runtime.memory.startSession({
-        sessionId: runtime.sessionHandle.sessionId,
-        goal: session.goal,
-        goalEmbedding: runtime.sessionHandle.goalEmbedding,
-        participants: session.participants,
-        timeboxMs: session.timeboxMs,
-        startedAt: runtime.sessionHandle.startedAt,
-        prospect: session.prospect,
-        offer: session.offer,
-        successCriteria: session.successCriteria,
-        knownObjections: session.knownObjections,
-        nextAsk: session.nextAsk,
-      })
-    }
-    setStatus?.('Sales goal ready. Tap glasses to confirm.')
-  } catch (error) {
-    appendEventLog(`Onboarding failed: ${error instanceof Error ? error.message : String(error)}`, 'warn')
-    setStatus?.('Sales goal saved; embedding fallback will run on start.')
-  }
-
-  if (runtime.bridge) {
-    await enqueueRender(() => renderHome(runtime.bridge!, store.getState().session.goal, 'rebuild', true))
-  }
-}
-
-async function showOnboardingConfirm(setStatus: SetStatus): Promise<void> {
   const bridge = runtime.bridge
-  if (!bridge) {
-    setStatus('Bridge not connected')
-    return
-  }
   const state = store.getState()
-  if (!state.onboardingReady) {
-    setStatus('Open Onboarding in companion first')
-    await enqueueRender(() => renderHome(bridge, state.session.goal, 'rebuild', false))
-    return
-  }
-  store.setState({ screen: 'onboard', previousScreen: 'home' })
-  await enqueueRender(() => renderOnboarding(bridge, store.getState().session))
-}
+  const sessionId = state.session.id || ulid()
+  const prospect = state.session.prospect || 'Client'
 
-async function startListening(setStatus: SetStatus): Promise<void> {
-  const bridge = runtime.bridge
-  if (!bridge) {
-    setStatus('Bridge not connected')
-    return
-  }
-  const state = store.getState()
-  let handle = runtime.sessionHandle
-  if (!handle) {
-    handle = await startSession({
-      goal: state.session.goal,
-      participants: state.session.participants,
-      timeboxMs: state.session.timeboxMs,
-      prospect: state.session.prospect,
-      offer: state.session.offer,
-      successCriteria: state.session.successCriteria,
-      knownObjections: state.session.knownObjections,
-      nextAsk: state.session.nextAsk,
-    }, { backendUrl: DEFAULT_BACKEND_URL })
-    runtime.sessionHandle = handle
-    if (runtime.memory) {
-      await runtime.memory.startSession({
-        sessionId: handle.sessionId,
-        goal: state.session.goal,
-        goalEmbedding: handle.goalEmbedding,
-        participants: state.session.participants,
-        timeboxMs: state.session.timeboxMs,
-        startedAt: handle.startedAt,
-        prospect: state.session.prospect,
-        offer: state.session.offer,
-        successCriteria: state.session.successCriteria,
-        knownObjections: state.session.knownObjections,
-        nextAsk: state.session.nextAsk,
-      })
-    }
-  }
-  handle = { ...handle, startedAt: Date.now() }
-  runtime.sessionHandle = handle
-  if (runtime.memory) {
-    await runtime.memory.startSession({
-      sessionId: handle.sessionId,
-      goal: state.session.goal,
-      goalEmbedding: handle.goalEmbedding,
-      participants: state.session.participants,
-      timeboxMs: state.session.timeboxMs,
-      startedAt: handle.startedAt,
-      prospect: state.session.prospect,
-      offer: state.session.offer,
-      successCriteria: state.session.successCriteria,
-      knownObjections: state.session.knownObjections,
-      nextAsk: state.session.nextAsk,
-    })
-  }
+  lastSpeaker = null
   store.setState({
     screen: 'armed',
-    previousScreen: 'onboard',
-    isRecording: true,
+    previousScreen: 'home',
+    session: { ...state.session, id: sessionId, startedAt: Date.now() },
     finalTranscript: '',
     provisionalTranscript: '',
-    session: {
-      ...state.session,
-      id: handle.sessionId,
-      startedAt: handle.startedAt,
-      goalEmbedding: Array.from(handle.goalEmbedding),
-      alignBaseline: null,
-      finalAlign: null,
-      outcome: null,
-    },
   })
+
   trigger.reset()
-  trigger.onGoalSet({
-    sessionId: handle.sessionId,
-    goal: store.getState().session.goal,
-    goalEmbedding: handle.goalEmbedding,
-    timeboxMs: store.getState().session.timeboxMs,
-    prospect: store.getState().session.prospect,
-    offer: store.getState().session.offer,
-    successCriteria: store.getState().session.successCriteria,
-    knownObjections: store.getState().session.knownObjections,
-    nextAsk: store.getState().session.nextAsk,
+  trigger.onGoalSet(buildGoalContext())
+
+  if (!runtime.tickTimer) {
+    runtime.tickTimer = window.setInterval(() => trigger.tick(), TICK_MS)
+  }
+
+  // Show anchor card: goal + offer + next ask
+  const anchorBullets = [
+    truncate(state.session.goal, 58),
+    state.session.offer ? `Offer: ${truncate(state.session.offer, 50)}` : null,
+    state.session.nextAsk ? `Ask: ${truncate(state.session.nextAsk, 52)}` : null,
+  ].filter((b): b is string => b !== null)
+
+  const anchorTs = Date.now()
+  const anchorCard: CardModel = {
+    kind: 'recap',
+    title: `Session — ${prospect}`,
+    bullets: anchorBullets,
+    footerHint: '● mark  ▼ dismiss',
+    ts: anchorTs,
+  }
+
+  store.setState({
+    screen: 'card',
+    currentCard: anchorCard,
+    cardHistory: [anchorCard],
+    cardShownAt: anchorTs,
   })
+
+  if (bridge) await enqueueRender(() => renderCard(bridge, anchorCard, 'rebuild'))
+
+  setStatusRef(`Coaching: ${prospect}`)
+  appendEventLog(`Coaching activated — ${prospect}`)
+
+  // Auto-dismiss anchor after 8 seconds
+  window.setTimeout(async () => {
+    if (store.getState().currentCard?.ts === anchorTs) {
+      store.setState({ screen: 'armed', currentCard: null, cardShownAt: null })
+      if (bridge) await renderArmed(bridge, store.getState())
+    }
+  }, 8000)
+}
+
+// ─── Audio / STT ─────────────────────────────────────────────────────────────
+
+function onFinalText(text: string, speaker?: number): void {
+  if (coachingActive) {
+    const prefix = speakerPrefix(speaker)
+    const labeled = prefix + text
+    store.setState((current) => ({ finalTranscript: current.finalTranscript + labeled, provisionalTranscript: '' }))
+    trigger.onFinalTranscript(labeled)
+    if (runtime.bridge && store.getState().screen === 'armed') {
+      void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
+    }
+  } else {
+    // Passive: check for prospect name trigger
+    const prospect = store.getState().session.prospect
+    if (prospect && text.toLowerCase().includes(prospect.toLowerCase())) {
+      void activateCoaching()
+    }
+  }
+}
+
+function onProvisionalText(text: string): void {
+  if (coachingActive) {
+    store.setState({ provisionalTranscript: text })
+    trigger.onProvisionalTranscript(text)
+    if (runtime.bridge && store.getState().screen === 'armed') {
+      void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
+    }
+  } else {
+    const prospect = store.getState().session.prospect
+    if (prospect && text.toLowerCase().includes(prospect.toLowerCase())) {
+      void activateCoaching()
+    }
+  }
+}
+
+async function startPassive(setStatus: SetStatus): Promise<void> {
+  if (store.getState().isRecording) return
+  setStatusRef = setStatus
+  coachingActive = false
+  lastSpeaker = null
+
+  const bridge = runtime.bridge
+  const prospect = store.getState().session.prospect || 'client'
+
+  store.setState({ isRecording: true, finalTranscript: '', provisionalTranscript: '' })
 
   runtime.stt?.close()
   runtime.stt = createSttClient({
     backendUrl: DEFAULT_BACKEND_URL,
     installId: runtime.installId,
-    onFinal(text) {
-      store.setState((current) => ({ finalTranscript: current.finalTranscript + text, provisionalTranscript: '' }))
-      trigger.onFinalTranscript(text)
-      if (runtime.bridge && store.getState().screen === 'armed') void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
-    },
-    onProvisional(text) {
-      store.setState({ provisionalTranscript: text })
-      trigger.onProvisionalTranscript(text)
-      if (runtime.bridge && store.getState().screen === 'armed') void enqueueRender(() => updateArmedText(runtime.bridge!, store.getState()))
-    },
+    onFinal: onFinalText,
+    onProvisional: onProvisionalText,
     onError(error) {
       appendEventLog(`STT error: ${error.message}`, 'warn')
       setStatus(`STT error: ${error.message}`)
     },
   })
 
-  await enqueueRender(() => renderArmed(bridge, store.getState()))
-  await bridge.audioControl(true)
+  if (bridge) {
+    await bridge.audioControl(true)
+  } else {
+    runtime.browserMic = createBrowserMic({
+      onAudio(pcm) {
+        trigger.onAudioFrame(pcm)
+        runtime.stt?.sendAudio(pcm)
+      },
+      onError(error) {
+        appendEventLog(`Mic error: ${error.message}`, 'warn')
+        setStatus(`Mic error: ${error.message}`)
+      },
+    })
+    await runtime.browserMic.start()
+  }
+
   runtime.stt.connect().catch((error) => {
     appendEventLog(`STT connect failed: ${error instanceof Error ? error.message : String(error)}`, 'warn')
-    setStatus('Recording locally; STT backend unavailable')
+    setStatus('Mic active; STT backend unavailable')
   })
-  setStatus('Listening')
-  appendEventLog('Listening started')
+
+  setStatus(`Say "${prospect}" to begin`)
+  appendEventLog('Passive listening started')
 }
 
 async function stopListening(finalise = false): Promise<void> {
   const bridge = runtime.bridge
+  coachingActive = false
   store.setState({ isRecording: false })
   runtime.stt?.close()
   runtime.stt = null
+  runtime.browserMic?.stop()
+  runtime.browserMic = null
   if (bridge) await bridge.audioControl(false)
+  if (runtime.tickTimer) {
+    window.clearInterval(runtime.tickTimer)
+    runtime.tickTimer = null
+  }
   if (finalise && runtime.memory && store.getState().session.id) {
-    const state = store.getState()
-    await runtime.memory.finaliseSession(state.session.id, {
-      title: state.currentCard?.title ?? 'Sales session',
-      finalAlign: state.session.finalAlign,
-      outcome: state.session.outcome ?? 'completed',
+    const s = store.getState()
+    await runtime.memory.finaliseSession(s.session.id, {
+      title: s.currentCard?.title ?? null,
+      finalAlign: s.session.finalAlign,
+      outcome: 'completed',
     })
   }
   appendEventLog('Listening stopped')
 }
 
-async function finaliseCurrentSession(outcome: 'completed' | 'abandoned' | 'timeboxed' = 'completed'): Promise<void> {
-  const state = store.getState()
-  store.setState((current) => ({
-    screen: 'finalising',
-    previousScreen: current.screen,
-    session: { ...current.session, outcome },
-  }))
-  if (runtime.bridge) {
-    await enqueueRender(() => renderFinalising(runtime.bridge!, {
-      segments: runtime.memory?.getSnapshot().segments.filter((segment) => segment.sessionId === state.session.id).length ?? state.cardHistory.length,
-      outcome,
-      message: 'done',
-    }))
-  }
-  await stopListening(true)
-  window.setTimeout(() => {
-    store.resetSession()
-    runtime.sessionHandle = null
-    if (runtime.bridge) void enqueueRender(() => renderHome(runtime.bridge!, store.getState().session.goal, 'rebuild', store.getState().onboardingReady))
-  }, 3_000)
-}
+// ─── Trigger subscription ────────────────────────────────────────────────────
 
 function registerTriggerSubscription(setStatus: SetStatus): void {
   trigger.subscribe((event) => {
-    void (async () => {
-      if (event.kind === 'heartbeat') {
-        await appendHeartbeat(event)
-        return
+    if (event.alignScore !== null) {
+      store.setState({ lastAlignScore: event.alignScore })
+      if (runtime.bridge && store.getState().screen === 'armed') {
+        void enqueueRender(() => updateArmedAlign(runtime.bridge!, store.getState()))
       }
-      const card = await summariseForEvent(event)
-      store.setState((state) => ({
-        session: {
-          ...state.session,
-          alignBaseline: event.baseline ?? state.session.alignBaseline,
-          finalAlign: event.alignScore ?? state.session.finalAlign,
-        },
-      }))
+    }
+    if (event.kind === 'heartbeat') return
+    void (async () => {
+      const card = event.reason === 'drift_breach'
+        ? await buildDriftCard(event)
+        : summariseLocally(event)
       await surfaceCard(card, event)
-      if (event.kind === 'actions') {
+      if (event.reason === 'closing_cue') {
         setStatus('Wrap detected; finalising after silence')
-        runtime.stopTimer = window.setTimeout(() => void finaliseCurrentSession('completed'), WRAP_SILENCE_STOP_MS)
+        runtime.stopTimer = window.setTimeout(() => void stopListening(true), WRAP_SILENCE_STOP_MS)
       }
     })()
   })
 }
+
+// ─── Bridge events ───────────────────────────────────────────────────────────
 
 function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
   if (runtime.unsubscribeEvents) return
@@ -529,8 +419,7 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
     }
     if (event.kind === 'abnormal_exit') trigger.noteAbnormalExit()
     void routeInputEvent(bridge, store, event, {
-      showOnboarding: () => showOnboardingConfirm(setStatus),
-      startListening: () => startListening(setStatus),
+      startListening: () => activateCoaching(),
       stopListening,
       showPreviousCard: async () => {
         const history = store.getState().cardHistory
@@ -538,28 +427,16 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
         if (card && runtime.bridge) await renderCard(runtime.bridge, card, 'upgrade')
       },
       dismissCard: async () => {
-        if (store.getState().currentCard?.kind === 'actions') {
-          await finaliseCurrentSession('completed')
-          return
-        }
         store.setState({ screen: 'armed', currentCard: null, cardShownAt: null })
         if (runtime.bridge) await renderArmed(runtime.bridge, store.getState())
       },
       saveCard: async () => {
-        const card = store.getState().currentCard
-        if (card?.kind === 'drift' && card.segmentId) {
-          await runtime.memory?.markSegmentAccepted?.(card.segmentId, true)
-        }
-        if (card?.kind === 'actions') {
-          await finaliseCurrentSession('completed')
-          return
-        }
         store.setState({ screen: 'armed', currentCard: null, cardShownAt: null })
         if (runtime.bridge) await renderArmed(runtime.bridge, store.getState())
       },
       muteDrift: () => trigger.muteDrift(DRIFT_MUTE_MS),
       renderHome: async () => {
-        if (runtime.bridge) await renderHome(runtime.bridge, store.getState().session.goal, 'rebuild', store.getState().onboardingReady)
+        if (runtime.bridge) await renderHome(runtime.bridge, store.getState().session.goal, store.getState().session.prospect, 'rebuild')
       },
       renderArmed: async () => {
         if (runtime.bridge) await renderArmed(runtime.bridge, store.getState())
@@ -588,7 +465,19 @@ function registerEvents(bridge: EvenAppBridge, setStatus: SetStatus): void {
 
 function registerSetupEvents(): void {
   window.addEventListener('mindmirror:setup', ((event: CustomEvent) => {
-    const detail = event.detail as SalesOnboardingDetail
+    const detail = event.detail as { goal?: string; participants?: string[]; timeboxMs?: number; passphrase?: string; prospect?: string; offer?: string; nextAsk?: string }
+    const state = store.getState()
+    store.setState({
+      session: {
+        ...state.session,
+        goal: detail.goal || state.session.goal,
+        participants: detail.participants ?? state.session.participants,
+        timeboxMs: detail.timeboxMs ?? state.session.timeboxMs,
+        prospect: detail.prospect ?? state.session.prospect,
+        offer: detail.offer ?? state.session.offer,
+        nextAsk: detail.nextAsk ?? state.session.nextAsk,
+      },
+    })
     if (detail.passphrase) {
       void createMemory({
         passphrase: detail.passphrase,
@@ -600,11 +489,16 @@ function registerSetupEvents(): void {
         appendEventLog(`Memory unlock failed: ${error instanceof Error ? error.message : String(error)}`, 'warn')
       })
     }
-  }) as EventListener)
-  window.addEventListener('mindmirror:onboarding', ((event: CustomEvent) => {
-    void prepareSalesOnboarding(event.detail as SalesOnboardingDetail)
+    // Update home screen if visible
+    if (runtime.bridge && store.getState().screen === 'home') {
+      const s = store.getState()
+      void enqueueRender(() => renderHome(runtime.bridge!, s.session.goal, s.session.prospect, 'rebuild'))
+    }
+    setStatusRef(`Say "${store.getState().session.prospect || 'client'}" to begin`)
   }) as EventListener)
 }
+
+// ─── Exports ─────────────────────────────────────────────────────────────────
 
 export function getMindMirrorStore() {
   return store
@@ -625,7 +519,6 @@ export function pushRecallToGlasses(hits: SearchHit[]): void {
         title: 'Memory hit',
         bullets: [top.snippet],
         footerHint: '● save  ▼ back',
-        elapsedMs: 0,
         ts: top.ts,
       },
     })
@@ -634,38 +527,37 @@ export function pushRecallToGlasses(hits: SearchHit[]): void {
 }
 
 export function createMindMirrorActions(setStatus: SetStatus): AppActions {
+  setStatusRef = setStatus
   registerTriggerSubscription(setStatus)
   registerSetupEvents()
 
   return {
     async connect() {
-      setStatus('Connecting to Even bridge...')
+      setStatus('Connecting...')
       try {
         runtime.bridge = await withTimeout(waitForEvenAppBridge(), 6000)
         runtime.installId = await ensureInstallId(runtime.bridge)
-        runtime.memory = await createMemory({
-          passphrase: '0000',
-          backendUrl: DEFAULT_BACKEND_URL,
-          bridge: runtime.bridge,
-        })
+        runtime.memory = await createMemory({ passphrase: '0000', backendUrl: DEFAULT_BACKEND_URL, bridge: runtime.bridge })
         registerEvents(runtime.bridge, setStatus)
-        await enqueueRender(() => renderHome(runtime.bridge!, store.getState().session.goal, 'create', store.getState().onboardingReady))
+        const s = store.getState()
+        await enqueueRender(() => renderHome(runtime.bridge!, s.session.goal, s.session.prospect, 'create'))
         runtime.startupRendered = true
-        runtime.tickTimer = window.setInterval(() => {
-          if (store.getState().isRecording) trigger.tick()
-        }, TICK_MS)
-        setStatus('Connected. Open Onboarding, then tap glasses.')
+        await startPassive(setStatus)
       } catch (error) {
-        setStatus('Bridge not found. Browser companion mode.')
         appendEventLog(`Bridge unavailable: ${error instanceof Error ? error.message : String(error)}`, 'warn')
         runtime.memory = await createMemory({ passphrase: '0000', backendUrl: DEFAULT_BACKEND_URL })
+        await startPassive(setStatus)
       }
     },
     async action() {
-      if (store.getState().isRecording) {
-        await stopListening(false)
+      const state = store.getState()
+      if (!state.isRecording) {
+        await startPassive(setStatus)
+      } else if (!coachingActive) {
+        // Manual coaching start (bypasses name trigger)
+        await activateCoaching()
       } else {
-        await showOnboardingConfirm(setStatus)
+        await stopListening(false)
       }
     },
   }
@@ -675,6 +567,7 @@ window.addEventListener('beforeunload', () => {
   if (runtime.tickTimer) window.clearInterval(runtime.tickTimer)
   if (runtime.stopTimer) window.clearTimeout(runtime.stopTimer)
   runtime.stt?.close()
+  runtime.browserMic?.stop()
   void runtime.bridge?.audioControl(false)
   runtime.unsubscribeEvents?.()
   runtime.unsubscribeDevice?.()

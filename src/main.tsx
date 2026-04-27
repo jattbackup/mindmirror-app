@@ -12,6 +12,8 @@ async function boot() {
   const root = createRoot(rootEl)
 
   let status = app.initialStatus ?? `${app.name} ready`
+  let alignScore: number | null = null
+
   const actions = await app.createActions((text) => {
     status = text
     render()
@@ -22,6 +24,7 @@ async function boot() {
       <React.StrictMode>
         <CompanionApp
           status={status}
+          alignScore={alignScore}
           onConnect={actions.connect}
           onAction={actions.action}
         />
@@ -32,6 +35,14 @@ async function boot() {
   render()
   void actions.connect().catch((error) => {
     console.error('[mindmirror] auto-connect failed', error)
+  })
+
+  const { getMindMirrorStore } = await import('../g2/main')
+  getMindMirrorStore().subscribe((state) => {
+    if (state.lastAlignScore !== alignScore) {
+      alignScore = state.lastAlignScore
+      render()
+    }
   })
 }
 

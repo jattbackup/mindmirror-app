@@ -4,16 +4,14 @@ import {
   type EvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
 import { textContainer } from './containers'
-import { progressBar, truncate } from './format'
+import { truncate } from './format'
 
-export function buildHomePage(goal: string, ready = false): CreateStartUpPageContainer {
+export function buildHomePage(goal: string, prospect = 'client', _ready = false): CreateStartUpPageContainer {
   const body = [
-    '● MindMirror',
-    ready ? 'Tap to confirm sales goal' : 'Set sales goal in companion',
+    '● MindMirror — Listening',
+    `Say "${prospect}" to begin`,
     '',
     `Goal: ${truncate(goal, 90)}`,
-    '',
-    `${progressBar(ready ? 1 : 0)} ${ready ? 'ready' : 'waiting'}`,
     '',
     'Double tap exits',
   ].join('\n')
@@ -41,10 +39,10 @@ export function buildHomePage(goal: string, ready = false): CreateStartUpPageCon
 export async function renderHome(
   bridge: EvenAppBridge,
   goal: string,
+  prospect: string,
   mode: 'create' | 'rebuild',
-  ready = false,
 ): Promise<void> {
-  const page = buildHomePage(goal, ready)
+  const page = buildHomePage(goal, prospect)
   if (mode === 'create') {
     await bridge.createStartUpPageContainer(page)
     return

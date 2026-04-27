@@ -1,4 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer, WebSocket } from 'ws'
 import { corsHeaders, getInstallId } from './lib/auth.js'
 import { createRateLimiter } from './lib/ratelimit.js'
@@ -6,6 +8,7 @@ import { safeLog } from './lib/redact.js'
 import { embedTexts } from './routes/embed.js'
 import { goalEmbed } from './routes/goal.embed.js'
 import { goalScore } from './routes/goal.score.js'
+import { driftCoach } from './routes/llm.drift.js'
 import { summarise } from './routes/llm.summarise.js'
 import { searchSegments } from './routes/search.js'
 import { sttConnect, type SttConnectRequest } from './routes/stt.connect.js'
@@ -51,6 +54,9 @@ export function createMindMirrorServer() {
       } else if (req.method === 'POST' && url.pathname === '/stt/connect') {
         const body = await readJson<SttConnectRequest>(req)
         send(res, 200, sttConnect(req, body), origin)
+      } else if (req.method === 'POST' && url.pathname === '/llm/drift-coach') {
+        const body = await readJson<Parameters<typeof driftCoach>[0]>(req)
+        send(res, 200, await driftCoach(body), origin)
       } else if (req.method === 'POST' && url.pathname === '/llm/summarise') {
         const body = await readJson<Parameters<typeof summarise>[0]>(req)
         const result = await summarise(body)
@@ -115,7 +121,7 @@ export function createMindMirrorServer() {
   return server
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
   const port = Number(process.env.PORT ?? 8787)
   createMindMirrorServer().listen(port, () => {
     safeLog(`listening on ${port}`)

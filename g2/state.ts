@@ -34,6 +34,7 @@ export type G2State = {
   cardHistory: CardModel[]
   cardShownAt: number | null
   markedForProbe: boolean
+  lastAlignScore: number | null
 }
 
 export type G2Store = {
@@ -72,6 +73,7 @@ const initialState: G2State = {
   cardHistory: [],
   cardShownAt: null,
   markedForProbe: false,
+  lastAlignScore: null,
 }
 
 export function createG2Store(): G2Store {

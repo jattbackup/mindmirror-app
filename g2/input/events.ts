@@ -79,7 +79,6 @@ export function normalizeEvenHubEvent(event: EvenHubEvent): NormalizedEvent {
 }
 
 export type InputHandlers = {
-  showOnboarding(): Promise<void>
   startListening(): Promise<void>
   stopListening(finalise?: boolean): Promise<void>
   showPreviousCard(): Promise<void>
@@ -100,22 +99,10 @@ export async function routeInputEvent(
 ): Promise<void> {
   const screen: Screen = store.getState().screen
 
-  if (event.kind === 'double_click') {
-    if (screen === 'home') {
-      await bridge.shutDownPageContainer(1)
-      return
+  if (event.kind === 'foreground_enter') {
+    if (!store.getState().isRecording) {
+      await handlers.startListening()
     }
-    if (screen === 'card' || screen === 'recall') {
-      await handlers.dismissCard()
-      return
-    }
-    if (screen === 'onboard') {
-      store.setState({ screen: 'home', previousScreen: screen })
-      await handlers.renderHome()
-      return
-    }
-    store.setState({ screen: 'home', previousScreen: screen })
-    await handlers.renderHome()
     return
   }
 
@@ -125,13 +112,24 @@ export async function routeInputEvent(
     return
   }
 
+  if (event.kind === 'double_click') {
+    if (screen === 'home') {
+      await bridge.shutDownPageContainer(1)
+      return
+    }
+    if (screen === 'card' || screen === 'recall') {
+      await handlers.dismissCard()
+      return
+    }
+    store.setState({ screen: 'home', previousScreen: screen })
+    await handlers.renderHome()
+    return
+  }
+
   if (event.kind === 'click') {
     if (screen === 'home') {
-      await handlers.showOnboarding()
-    } else if (screen === 'onboard') {
       await handlers.startListening()
     } else if (screen === 'armed') {
-      store.setState({ markedForProbe: true })
       handlers.forceMark()
     } else if (screen === 'card') {
       await handlers.saveCard()

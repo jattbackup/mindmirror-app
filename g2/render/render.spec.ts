@@ -51,12 +51,13 @@ const state: G2State = {
   cardHistory: [],
   cardShownAt: null,
   markedForProbe: false,
+  lastAlignScore: null,
 }
 
 describe('G2 renderers', () => {
   it('keeps every page simulator safe with one event capture container', () => {
     for (const page of [
-      buildHomePage(state.session.goal, true),
+      buildHomePage(state.session.goal, 'Prospect'),
       buildOnboardingPage(state.session),
       buildArmedPage(state, 0),
       buildCardPage({ kind: 'recap', title: 'Toward close', bullets: ['Buyer agreed to pilot'], tickIndex: 1 }),

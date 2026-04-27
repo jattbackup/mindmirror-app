@@ -15,6 +15,7 @@ export type SttClient = {
 type SonioxToken = {
   text: string
   is_final: boolean
+  speaker?: number
 }
 
 type SonioxResponse = {
@@ -34,8 +35,8 @@ export function createSttClient(opts: {
   backendUrl?: string
   installId: string
   provider?: 'soniox' | 'deepgram'
-  onFinal(text: string): void
-  onProvisional(text: string): void
+  onFinal(text: string, speaker?: number): void
+  onProvisional(text: string, speaker?: number): void
   onError?(error: Error): void
 }): SttClient {
   const backendUrl = opts.backendUrl ?? DEFAULT_BACKEND_URL
@@ -68,6 +69,8 @@ export function createSttClient(opts: {
               sample_rate: SAMPLE_RATE,
               num_channels: 1,
               enable_endpoint_detection: true,
+              enable_speaker_diarization: true,
+              num_speakers: 2,
             }))
           }
           resolve()
@@ -85,19 +88,30 @@ export function createSttClient(opts: {
               opts.onError?.(new Error(data.error_message ?? 'STT provider error'))
               return
             }
-            let finalText = ''
-            let provisionalText = ''
-            for (const token of data.tokens ?? []) {
-              if (token.text === '<end>') {
-                finalText += '\n'
-              } else if (token.is_final) {
-                finalText += token.text
-              } else {
-                provisionalText += token.text
+            const tokens = data.tokens ?? []
+            const finalTokens = tokens.filter((t) => t.is_final && t.text !== '<end>')
+            const provisionalTokens = tokens.filter((t) => !t.is_final)
+
+            // Emit final tokens grouped by speaker
+            if (finalTokens.length > 0) {
+              let currentSpeaker = finalTokens[0].speaker
+              let currentText = ''
+              for (const token of finalTokens) {
+                if (token.speaker !== currentSpeaker) {
+                  if (currentText) opts.onFinal(currentText, currentSpeaker)
+                  currentSpeaker = token.speaker
+                  currentText = token.text
+                } else {
+                  currentText += token.text
+                }
               }
+              if (currentText) opts.onFinal(currentText, currentSpeaker)
             }
-            if (finalText) opts.onFinal(finalText)
-            opts.onProvisional(provisionalText)
+
+            if (provisionalTokens.length > 0) {
+              const provisionalText = provisionalTokens.map((t) => t.text).join('')
+              opts.onProvisional(provisionalText, provisionalTokens[0].speaker)
+            }
           } catch (error) {
             opts.onError?.(error instanceof Error ? error : new Error(String(error)))
           }
@@ -111,7 +125,7 @@ export function createSttClient(opts: {
       if (ws?.readyState === WebSocket.OPEN) ws.send(pcm)
     },
     close() {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(new Uint8Array(0))
+      if (ws?.readyState === WebSocket.OPEN) ws.send(new Uint8Array(0).buffer)
       ws?.close()
       ws = null
     },
